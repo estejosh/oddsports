@@ -19,7 +19,8 @@ Work through phases in order. PRD.md is the spec; this is the execution sequence
 ## Phase 3 — monetization breadth
 1. Apply to affiliate programs; add real templates to `AFFILIATE_TEMPLATES` in `packages/shared/src/links.ts`.
 2. Betchu referral link format + attribution dashboard (clicks → signups → first deposit).
-3. CLV tracker: record closing lines, publish rolling pick performance (public page = trust + acquisition).
+3. The Record (P0 #11): implement `fetchFinalScores` (odds API scores endpoint), carry structured side info in PickBlock (replace string parsing in grading.ts), publish the daily reveal to the free channel + all newsletter tiers. Rule: every published pick gets graded and revealed — losses included, reveals immutable.
+4. Public web page for The Record (rolling performance, per-sport splits) — the acquisition landing page.
 4. Sharp live alerts: template-driven from line-move triggers (no LLM in alert path).
 
 ## Hard gates (do not launch without)

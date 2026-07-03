@@ -12,6 +12,7 @@ import { runModel } from "./model.js";
 import { writePickProse, complianceFooter } from "./prose.js";
 import { TokenBudget } from "./budget.js";
 import { openDb, saveSlate } from "./store.js";
+import { gradeSlate, buildRevealPost } from "./grading.js";
 
 const LAUNCH_SPORTS: Sport[] = ["nfl", "nba", "mlb", "nhl", "soccer_epl", "soccer_ucl", "mma", "boxing"];
 const FREE_PICK_COUNT = 5;
@@ -20,6 +21,18 @@ export async function runDailyPipeline(date = new Date().toISOString().slice(0, 
   const budget = new TokenBudget();
   budget.onAlert = (spent, ceiling) =>
     console.warn(`[budget] ALERT: $${spent.toFixed(2)} of $${ceiling} daily budget spent`);
+
+  // Step 0: grade yesterday and build "The Record" reveal (PRD P0 #11).
+  // Zero AI tokens — pure data. Reveal shows full paid-tier depth to ALL tiers.
+  const yesterday = new Date(Date.parse(date) - 86_400_000).toISOString().slice(0, 10);
+  {
+    const db = openDb();
+    await gradeSlate(db, yesterday);
+    const reveal = buildRevealPost(db, yesterday);
+    console.log(`[pipeline] reveal ready (${reveal.length} chars)`);
+    // TODO(fable): publish reveal to free Telegram channel + top of today's
+    // email for every tier. Immutable once posted — never edit past reveals.
+  }
 
   console.log(`[pipeline] ${date} — ingesting…`);
   const games = await fetchGames(LAUNCH_SPORTS);

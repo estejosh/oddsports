@@ -8,6 +8,7 @@ import { Tier, TIERS, canAccess, nextTier, RG_DISCLOSURE, RELATED_PARTY_DISCLOSU
 import type { DailySlate, PickBlock } from "@oddsports/shared";
 import { openDb, loadSlate, getSubscriberByTelegram } from "@oddsports/pipeline/dist/store.js";
 import { scaleUnitsToBankroll } from "@oddsports/pipeline/dist/model.js";
+import { rollingRecord, buildRevealPost } from "@oddsports/pipeline/dist/grading.js";
 import { createLinkToken, verifyLinkToken } from "./beehiiv.js";
 import { allow } from "./ratelimit.js";
 
@@ -90,6 +91,7 @@ bot.command("help", (ctx) =>
       "/bankroll <amount> — personalize sizing (Sharp)",
       "/raw <game> — raw model output (Sharp)",
       "/odds <game> — odds comparison, all books",
+      "/record — graded track record + yesterday's full reveal (free for everyone)",
       "/link <email> — link your newsletter subscription",
       "/verify <token> — complete linking",
       "/rg — responsible gambling resources",
@@ -195,6 +197,22 @@ bot.command("bankroll", async (ctx) => {
   await ctx.reply(
     `💰 Bankroll set to $${amount}. 1 unit = $${(amount / 100).toFixed(2)}. /units now shows dollar sizing.\n\n${RG_DISCLOSURE}`
   );
+});
+
+// /record — FREE tier on purpose (PRD P0 #11): the graded track record and
+// yesterday's full paid-depth reveal are public trust assets. Pure data, no AI.
+bot.command("record", async (ctx) => {
+  const rec = rollingRecord(db);
+  if (rec.graded === 0) {
+    await ctx.reply("📊 No graded picks yet — the record starts after the first settled slate.");
+    return;
+  }
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const reveal = buildRevealPost(db, yesterday);
+  // Telegram message cap is 4096 chars — send summary, then chunk the reveal.
+  for (let i = 0; i < reveal.length; i += 4000) {
+    await ctx.reply(reveal.slice(i, i + 4000), { parse_mode: "Markdown" });
+  }
 });
 
 // /why, /line, /raw — pre-generated content lookups keyed by fuzzy game match.

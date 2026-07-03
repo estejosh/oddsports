@@ -63,6 +63,7 @@ The bot is the real-time surface; email is the daily-depth surface. One content 
 | `/bankroll <amount>` | Sharp | Set bankroll; sizing responses scale to it (arithmetic, no AI) |
 | `/raw <game>` | Sharp | Raw model output table (data dump, no AI) |
 | `/odds <game>` | Free | Odds comparison across books incl. Betchu, all links tracked (data lookup) |
+| `/record` | Free | Rolling graded track record (W-L, units, CLV) per tier/sport + yesterday's full reveal (data lookup, no AI) |
 | `/rg` | — | Responsible gambling resources, self-exclusion pointer |
 
 ### 5.3 Bot Requirements (P0)
@@ -100,10 +101,14 @@ The bot is the real-time surface; email is the daily-depth surface. One content 
 9. Launch coverage: NFL, NBA, MLB, NHL, EPL/UCL soccer, UFC/boxing; expand opportunistically.
 10. Related-party disclosure on Betchu links ("OddSports and Betchu are affiliated") — pending legal wording.
 
+### Must-Have (P0) — added v3
+11. **Post-hoc transparency reveal ("The Record"):** after games settle, publish the FULL higher-tier pick content (Analyst/Sharp depth — model factors, sizing, everything) to ALL tiers including Free, graded win/loss/push with closing-line-value. Rationale: an ungameable public track record is the core trust asset, and revealing paid-tier depth 24h late is a standing advertisement for upgrading. Losses are NEVER omitted or edited — selective publication destroys the entire value of the record and is a deceptive-marketing risk.
+    - *Acceptance:* every pick published to any paid tier appears, graded, in the next day's reveal; grading is automated from final scores; a rolling record (W-L, units +/-, CLV avg) is maintained per tier and per sport; reveal is immutable once published.
+
 ### Nice-to-Have (P1)
 1. Telegram Stars/native payments (pending gambling-policy check).
 2. SMS fallback for Sharp live alerts.
-3. CLV tracker / public performance record (major trust + acquisition asset).
+3. Public web page for The Record (rolling performance, per-sport splits) — extends P0 #11 from in-channel/in-email to a standalone acquisition page.
 4. Subscriber referral program.
 5. Personalized bankroll web dashboard.
 
