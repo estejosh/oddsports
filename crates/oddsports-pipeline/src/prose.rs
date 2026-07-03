@@ -3,7 +3,10 @@
 //! The LLM receives structured factors from the deterministic model and
 //! turns them into readable prose — it never invents numbers or picks.
 //!
-//! Anthropic API via plain reqwest — no SDK needed.
+//! BTCPC inference gateway (OpenAI-compatible /v1/chat/completions) via
+//! plain reqwest — no SDK needed. Point BTCPC_API_BASE at a local
+//! btcpc-node (default) or the hosted gateway; fees bill in dreams to
+//! the account behind BTCPC_API_KEY, not USD.
 
 use crate::budget::TokenBudget;
 use anyhow::{bail, Result};
@@ -17,6 +20,7 @@ You will receive structured model output (pick, edge, confidence, factors). Writ
 explains it at the requested depth. Rules:\n\
 - NEVER invent statistics, numbers, or factors not present in the input.\n\
 - NEVER use language implying certainty: no \"lock\", \"guaranteed\", \"can't lose\", \"sure thing\", \"free money\", \"risk-free\".\n\
+- The banned words above may not appear AT ALL, even negated (\"nothing is guaranteed\" is still a violation — write \"no outcome is certain\" instead).\n\
 - Always frame as analysis/opinion, acknowledge variance and risk.\n\
 - Match the requested depth exactly: \"brief\" = 1-2 sentences; \"standard\" = short paragraph with the key stats; \"deep\" = full factor-by-factor breakdown with line movement context.";
 
@@ -29,22 +33,41 @@ pub struct ProseResult {
 
 #[derive(Deserialize)]
 struct ApiResponse {
-    content: Vec<ContentBlock>,
+    choices: Vec<Choice>,
     usage: Usage,
 }
 
 #[derive(Deserialize)]
-struct ContentBlock {
-    #[serde(rename = "type")]
-    kind: String,
+struct Choice {
+    message: ChoiceMessage,
+}
+
+#[derive(Deserialize)]
+struct ChoiceMessage {
     #[serde(default)]
-    text: String,
+    content: String,
 }
 
 #[derive(Deserialize)]
 struct Usage {
-    input_tokens: u64,
-    output_tokens: u64,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    /// BTCPC-specific: inference fee debited from the account, in dreams.
+    #[serde(default)]
+    fee_dreams: u64,
+}
+
+/// Deterministic, always-compliant fallback — used on budget exhaustion
+/// and when the LLM cannot produce lint-clean prose.
+fn template_fallback(model_out: &ModelOutput) -> ProseResult {
+    ProseResult {
+        text: format!(
+            "{} — edge {} pts vs market consensus. Confidence {}/5.",
+            model_out.side, model_out.edge_pct, model_out.confidence
+        ),
+        input_tokens: 0,
+        output_tokens: 0,
+    }
 }
 
 pub async fn write_pick_prose(
@@ -56,14 +79,7 @@ pub async fn write_pick_prose(
 ) -> Result<ProseResult> {
     if budget.exhausted() {
         // Graceful degradation: template fallback, never a skipped compliance block.
-        return Ok(ProseResult {
-            text: format!(
-                "{} — edge {} pts vs market consensus. Confidence {}/5.",
-                model_out.side, model_out.edge_pct, model_out.confidence
-            ),
-            input_tokens: 0,
-            output_tokens: 0,
-        });
+        return Ok(template_fallback(model_out));
     }
 
     let (depth, max_tokens) = match tier {
@@ -72,61 +88,89 @@ pub async fn write_pick_prose(
         Tier::Free => ("brief", 100),
     };
     let llm_model = if tier >= Tier::Analyst {
-        env::var("MODEL_STRONG").unwrap_or_else(|_| "claude-sonnet-5".into())
+        env::var("MODEL_STRONG").unwrap_or_else(|_| "gemma4:26b".into())
     } else {
-        env::var("MODEL_CHEAP").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into())
+        env::var("MODEL_CHEAP").unwrap_or_else(|_| "gemma4:latest".into())
     };
 
-    let api_key = env::var("ANTHROPIC_API_KEY")?;
-    let body = json!({
-        "model": llm_model,
-        "max_tokens": max_tokens,
-        // Shared cached system prompt across all calls (PRD 6 #5).
-        "system": [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-        "messages": [{
-            "role": "user",
-            "content": format!(
-                "Depth: {depth}\nGame: {} @ {} ({:?}, starts {})\nModel output:\n{}",
-                game.away, game.home, game.sport, game.starts_at,
-                serde_json::to_string_pretty(model_out)?
-            )
-        }]
-    });
+    let api_base = env::var("BTCPC_API_BASE").unwrap_or_else(|_| "http://localhost:4242".into());
+    let api_key = env::var("BTCPC_API_KEY")?;
+    let user_content = format!(
+        "Depth: {depth}\nGame: {} @ {} ({:?}, starts {})\nModel output:\n{}",
+        game.away, game.home, game.sport, game.starts_at,
+        serde_json::to_string_pretty(model_out)?
+    );
 
-    let res = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .await?;
+    let mut totals = (0u64, 0u64);
+    let mut lint_note = String::new();
+    for lint_attempt in 0..2u32 {
+        let body = json!({
+            "model": llm_model,
+            "max_tokens": max_tokens,
+            "stream": false,
+            "messages": [
+                // Identical system prompt across all calls (PRD 6 #5).
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": format!("{user_content}{lint_note}")}
+            ]
+        });
 
-    if !res.status().is_success() {
-        bail!("anthropic API {}: {}", res.status(), res.text().await.unwrap_or_default());
-    }
-    let parsed: ApiResponse = res.json().await?;
-    budget.record(&llm_model, parsed.usage.input_tokens, parsed.usage.output_tokens)?;
+        // Cold model loads surface as transient 5xx from the gateway — retry
+        // with backoff before failing the pick.
+        let mut parsed: Option<ApiResponse> = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(10 * attempt as u64)).await;
+            }
+            let res = client
+                .post(format!("{api_base}/v1/chat/completions"))
+                .header("Authorization", format!("Bearer {api_key}"))
+                .json(&body)
+                .send()
+                .await?;
+            let status = res.status();
+            if status.is_server_error() && attempt < 2 {
+                tracing::warn!(%status, attempt, "BTCPC inference 5xx — retrying");
+                continue;
+            }
+            if !status.is_success() {
+                bail!("BTCPC inference {}: {}", status, res.text().await.unwrap_or_default());
+            }
+            parsed = Some(res.json().await?);
+            break;
+        }
+        let parsed = parsed.expect("loop either sets parsed or bails");
+        budget.record(&llm_model, parsed.usage.prompt_tokens, parsed.usage.completion_tokens)?;
+        tracing::debug!(model = %llm_model, fee_dreams = parsed.usage.fee_dreams, "inference fee");
+        totals.0 += parsed.usage.prompt_tokens;
+        totals.1 += parsed.usage.completion_tokens;
 
-    let text: String = parsed
-        .content
-        .iter()
-        .filter(|b| b.kind == "text")
-        .map(|b| b.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+        let text: String = parsed
+            .choices
+            .first()
+            .map(|c| c.message.content.trim().to_string())
+            .unwrap_or_default();
+        if text.is_empty() {
+            // The gateway can return 200 with empty content (e.g. model warm-up).
+            tracing::warn!(model = %llm_model, lint_attempt, "empty completion — retrying");
+            continue;
+        }
 
-    // Lint the LLM's output too — the system prompt forbids banned phrases but we verify.
-    let violations = lint_content(&text);
-    if !violations.is_empty() {
-        bail!(
-            "LLM prose failed compliance lint: {}",
-            violations.iter().map(|v| v.phrase.clone()).collect::<Vec<_>>().join(", ")
+        // Lint the LLM's output too — the system prompt forbids banned phrases but we verify.
+        let violations = lint_content(&text);
+        if violations.is_empty() {
+            return Ok(ProseResult { text, input_tokens: totals.0, output_tokens: totals.1 });
+        }
+        let phrases: Vec<String> = violations.iter().map(|v| v.phrase.clone()).collect();
+        tracing::warn!(model = %llm_model, lint_attempt, phrases = ?phrases, "prose failed compliance lint");
+        lint_note = format!(
+            "\n\nIMPORTANT: your previous draft was rejected for banned phrasing ({}). \
+             Rewrite it without those words appearing anywhere, in any form, even negated.",
+            phrases.join(", ")
         );
     }
 
-    Ok(ProseResult {
-        text,
-        input_tokens: parsed.usage.input_tokens,
-        output_tokens: parsed.usage.output_tokens,
-    })
+    // Compliance is a hard gate; readability is not. Publish the template.
+    tracing::warn!(game = %game.id, tier = ?tier, "prose fell back to template after lint retries");
+    Ok(template_fallback(model_out))
 }

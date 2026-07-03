@@ -9,6 +9,10 @@ fn pricing(model: &str) -> Option<(f64, f64)> {
     match model {
         m if m.starts_with("claude-haiku-4-5") => Some((1.0, 5.0)),
         m if m.starts_with("claude-sonnet-5") => Some((3.0, 15.0)),
+        // Ollama-style "name:tag" models served via the BTCPC gateway bill
+        // in dreams at the node, not USD here — the USD ceiling still guards
+        // any hosted-API models in the mix.
+        m if m.contains(':') => Some((0.0, 0.0)),
         _ => None,
     }
 }
