@@ -10,6 +10,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["estejosh"]
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

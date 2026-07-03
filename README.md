@@ -4,6 +4,8 @@ Tiered sports betting analysis — Beehiiv newsletter + Telegram bot, cross-prom
 
 **Read [PRD.md](./PRD.md) first.** [docs/FABLE_HANDOFF.md](./docs/FABLE_HANDOFF.md) is the build order.
 
+**License:** [PolyForm Noncommercial 1.0.0](./LICENSE.md) — source-available: read it, run it, fork it, learn from it. **Commercial use is not permitted.**
+
 Rust workspace — same stack and operational model as our other services (single binary, systemd, SQLite).
 
 ## Core design rules (do not violate)
