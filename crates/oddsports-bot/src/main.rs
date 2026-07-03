@@ -51,8 +51,11 @@ type Db = Arc<Mutex<rusqlite::Connection>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok(); // load .env if present; real env vars win
     tracing_subscriber::fmt::init();
-    let bot = Bot::from_env(); // TELEGRAM_BOT_TOKEN
+    let token = std::env::var("TELEGRAM_BOT_TOKEN")
+        .map_err(|_| anyhow::anyhow!("TELEGRAM_BOT_TOKEN is not set (see .env.example)"))?;
+    let bot = Bot::new(token);
     let db: Db = Arc::new(Mutex::new(open_db()?));
     tracing::info!("bot starting (long-poll dev mode — switch to webhooks in prod)");
 

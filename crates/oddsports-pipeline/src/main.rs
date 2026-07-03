@@ -2,6 +2,7 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok(); // load .env if present; real env vars win
     tracing_subscriber::fmt::init();
     match std::env::args().nth(1).as_deref() {
         // `oddsports-pipeline snapshot` — every 15–30 min via timer (steam + CLV data).

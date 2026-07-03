@@ -3,6 +3,6 @@ target/
 .env
 .env.*
 !.env.example
-data/*.sqlite
+data/*.sqlite*
 data/cache/
 .DS_Store

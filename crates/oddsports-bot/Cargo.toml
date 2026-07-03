@@ -8,6 +8,7 @@ authors.workspace = true
 oddsports-shared = { path = "../oddsports-shared" }
 oddsports-pipeline = { path = "../oddsports-pipeline" }
 teloxide = { version = "0.13", features = ["macros"] }
+dotenvy = "0.15"
 tokio.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
