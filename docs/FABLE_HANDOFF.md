@@ -1,13 +1,14 @@
 # Fable Handoff — Build Order
 
 Work through phases in order. PRD.md is the spec; this is the execution sequence.
+Stack: Rust workspace (`crates/`) — teloxide bot, pipeline binary, rusqlite, reqwest.
 
 ## Phase 1 — make the pipeline real
 1. Sign up for an odds API (the-odds-api.com free tier to start) → fill `ODDS_API_KEY`.
-2. Run `npm run pipeline:run` end-to-end; verify slate lands in SQLite with compliance blocks.
-3. Replace the consensus-deviation model in `packages/pipeline/src/model.ts` with per-sport projections (start NFL/NBA). Keep the `ModelOutput` interface stable.
+2. Run `cargo run -p oddsports-pipeline` end-to-end; verify slate lands in SQLite with compliance blocks.
+3. Replace the consensus-deviation model in `crates/oddsports-pipeline/src/model.rs` with per-sport projections (start NFL/NBA). Keep the `ModelOutput` struct stable.
 4. Add Beehiiv API post creation: pipeline output → draft post per tier → **human review → send** (review gate stays ON at launch).
-5. Set up Beehiiv publication with 4 tiers named exactly `free/starter/analyst/sharp` (must match `TIER_NAME_MAP` in `packages/bot/src/beehiiv.ts`).
+5. Set up Beehiiv publication with 4 tiers named exactly `free/starter/analyst/sharp` (must match `Tier::from_beehiiv_name` in `crates/oddsports-shared/src/tiers.rs`).
 
 ## Phase 2 — bot to production
 1. BotFather bot + channels (1 public free, 3 private paid) → fill env IDs.
@@ -19,7 +20,7 @@ Work through phases in order. PRD.md is the spec; this is the execution sequence
 ## Phase 3 — monetization breadth
 1. Apply to affiliate programs; add real templates to `AFFILIATE_TEMPLATES` in `packages/shared/src/links.ts`.
 2. Betchu referral link format + attribution dashboard (clicks → signups → first deposit).
-3. The Record (P0 #11): implement `fetchFinalScores` (odds API scores endpoint), carry structured side info in PickBlock (replace string parsing in grading.ts), publish the daily reveal to the free channel + all newsletter tiers. Rule: every published pick gets graded and revealed — losses included, reveals immutable.
+3. The Record (P0 #11): implement `fetch_final_scores` (odds API scores endpoint) in `grading.rs`, add `Sport` to `PickBlock`, publish the daily reveal to the free channel + all newsletter tiers. Rule: every published pick gets graded and revealed — losses included, reveals immutable. (Settlement already uses structured `pick_team`/`picked_line` — no string parsing.)
 4. Public web page for The Record (rolling performance, per-sport splits) — the acquisition landing page.
 4. Sharp live alerts: template-driven from line-move triggers (no LLM in alert path).
 

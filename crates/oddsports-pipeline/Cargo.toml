@@ -1,0 +1,25 @@
+[package]
+name = "oddsports-pipeline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "oddsports_pipeline"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oddsports-pipeline"
+path = "src/main.rs"
+
+[dependencies]
+oddsports-shared = { path = "../oddsports-shared" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
