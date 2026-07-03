@@ -114,6 +114,13 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
     for pick in deepest_blocks(&slate) {
         let Some(score) = scores.get(&pick.game_id) else { continue }; // not settled yet
 
+        // Closing line: prefer our own captured snapshot (median at last batch
+        // before start) — the scores endpoint doesn't carry closing lines.
+        let closing = match score.closing_spread {
+            Some(c) => Some(c),
+            None => crate::store::closing_spread(db, &pick.game_id)?,
+        };
+
         let result = settle_spread(pick, score);
         let units = pick.model.suggested_units;
         let units_delta = match result {
@@ -126,7 +133,7 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
             PickTeam::Home => pick.model.picked_line,
             PickTeam::Away => -pick.model.picked_line,
         };
-        let clv = score.closing_spread.map(|c| ((c - our_home_line) * 100.0).round() / 100.0);
+        let clv = closing.map(|c| ((c - our_home_line) * 100.0).round() / 100.0);
 
         graded += db.execute(
             "INSERT OR IGNORE INTO graded_picks

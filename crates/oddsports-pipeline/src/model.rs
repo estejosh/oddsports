@@ -10,20 +10,27 @@ use chrono::Utc;
 use oddsports_shared::{
     Factor, FactorDirection, Game, LinePoint, MarketType, ModelOutput, PickTeam,
 };
+use std::collections::HashMap;
 
 const MAX_UNITS: f64 = 3.0; // hard cap regardless of edge — bankroll discipline
 const KELLY_FRACTION: f64 = 0.25; // quarter-Kelly
 const MIN_BOOKS: usize = 3; // need consensus to say anything
 const MIN_EDGE: f64 = 0.5; // points of line value
+const STEAM_THRESHOLD: f64 = 1.0; // points of median movement = steam
 
-pub fn run_model(games: &[Game]) -> Vec<ModelOutput> {
-    let mut outputs: Vec<ModelOutput> = games.iter().filter_map(analyze_spread).collect();
+/// `history`: median home-line snapshots per game (from store::line_history),
+/// oldest first. Empty map = no snapshot data yet; model runs on consensus only.
+pub fn run_model(games: &[Game], history: &HashMap<String, Vec<LinePoint>>) -> Vec<ModelOutput> {
+    let mut outputs: Vec<ModelOutput> = games
+        .iter()
+        .filter_map(|g| analyze_spread(g, history.get(g.id.as_str()).map(Vec::as_slice).unwrap_or(&[])))
+        .collect();
     // Highest edge first — if the token budget degrades, we drop from the tail.
     outputs.sort_by(|a, b| b.edge_pct.partial_cmp(&a.edge_pct).unwrap_or(std::cmp::Ordering::Equal));
     outputs
 }
 
-fn analyze_spread(game: &Game) -> Option<ModelOutput> {
+fn analyze_spread(game: &Game, history: &[LinePoint]) -> Option<ModelOutput> {
     let mut points: Vec<(f64, &str)> = game
         .spread_lines
         .iter()
@@ -50,7 +57,7 @@ fn analyze_spread(game: &Game) -> Option<ModelOutput> {
         return None;
     }
 
-    let confidence = match edge {
+    let confidence: u8 = match edge {
         e if e >= 2.0 => 4,
         e if e >= 1.5 => 3,
         e if e >= 1.0 => 2,
@@ -65,6 +72,50 @@ fn analyze_spread(game: &Game) -> Option<ModelOutput> {
         (PickTeam::Away, format!("{} {}", game.away, fmt_line(-market_line)))
     };
 
+    let mut factors = vec![Factor {
+        name: "book consensus deviation".into(),
+        direction: FactorDirection::For,
+        weight: 1.0,
+        detail: format!(
+            "{best_book} posts {} vs market median {} across {} books",
+            fmt_line(market_line),
+            fmt_line(fair_line),
+            points.len()
+        ),
+    }];
+
+    // Signal 2 — steam: sustained median movement across snapshots means sharp
+    // money is pushing the number. Confirms the pick if the market is moving
+    // TOWARD our side (making our stale price better); contradicts if moving away.
+    let mut confidence = confidence;
+    if let (Some(first), Some(last)) = (history.first(), history.last()) {
+        let movement = last.line - first.line; // home-perspective points
+        if movement.abs() >= STEAM_THRESHOLD {
+            // Home line dropping (more negative) = money on home; rising = money on away.
+            let steam_on_home = movement < 0.0;
+            let agrees = steam_on_home == (pick_team == PickTeam::Home);
+            factors.push(Factor {
+                name: "line steam".into(),
+                direction: if agrees { FactorDirection::For } else { FactorDirection::Against },
+                weight: (movement.abs() / 2.0).min(1.0),
+                detail: format!(
+                    "market median moved {} → {} over {} snapshots ({})",
+                    fmt_line(first.line),
+                    fmt_line(last.line),
+                    history.len(),
+                    if agrees { "toward our side" } else { "against our side" }
+                ),
+            });
+            confidence = if agrees { (confidence + 1).min(5) } else { confidence.saturating_sub(1).max(1) };
+        }
+    }
+
+    let line_history = if history.is_empty() {
+        vec![LinePoint { at: Utc::now().to_rfc3339(), line: market_line }]
+    } else {
+        history.to_vec()
+    };
+
     Some(ModelOutput {
         game_id: game.id.clone(),
         market: MarketType::Spread,
@@ -75,21 +126,8 @@ fn analyze_spread(game: &Game) -> Option<ModelOutput> {
         edge_pct: edge,
         confidence,
         suggested_units,
-        factors: vec![Factor {
-            name: "book consensus deviation".into(),
-            direction: FactorDirection::For,
-            weight: 1.0,
-            detail: format!(
-                "{best_book} posts {} vs market median {} across {} books",
-                fmt_line(market_line),
-                fmt_line(fair_line),
-                points.len()
-            ),
-        }],
-        line_history: vec![LinePoint {
-            at: Utc::now().to_rfc3339(),
-            line: market_line,
-        }],
+        factors,
+        line_history,
     })
 }
 

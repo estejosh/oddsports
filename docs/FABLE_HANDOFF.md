@@ -6,6 +6,9 @@ Stack: Rust workspace (`crates/`) — teloxide bot, pipeline binary, rusqlite, r
 ## Phase 1 — make the pipeline real
 1. Sign up for an odds API (the-odds-api.com free tier to start) → fill `ODDS_API_KEY`.
 2. Run `cargo run -p oddsports-pipeline` end-to-end; verify slate lands in SQLite with compliance blocks.
+2b. Schedule `oddsports-pipeline snapshot` every 20 min (systemd timer / cron). This feeds
+    steam detection and closing-line capture — the record's CLV is only as honest as this
+    job's uptime. Watch the odds API request quota: 8 sports × 3/hr ≈ 550 requests/day.
 3. Replace the consensus-deviation model in `crates/oddsports-pipeline/src/model.rs` with per-sport projections (start NFL/NBA). Keep the `ModelOutput` struct stable.
 4. Add Beehiiv API post creation: pipeline output → draft post per tier → **human review → send** (review gate stays ON at launch).
 5. Set up Beehiiv publication with 4 tiers named exactly `free/starter/analyst/sharp` (must match `Tier::from_beehiiv_name` in `crates/oddsports-shared/src/tiers.rs`).

@@ -34,6 +34,7 @@ struct ApiMarket {
 
 #[derive(Deserialize)]
 struct ApiOutcome {
+    name: String,
     price: f64,
     point: Option<f64>,
 }
@@ -73,13 +74,15 @@ fn normalize(sport: Sport, ev: ApiEvent) -> Game {
 
     for bm in &ev.bookmakers {
         for market in &bm.markets {
-            let dest = match market.key.as_str() {
-                "spreads" => &mut spread,
-                "h2h" => &mut moneyline,
-                "totals" => &mut total,
-                _ => continue,
-            };
             for o in &market.outcomes {
+                // Keep ONE perspective per market so medians are meaningful:
+                // spreads = home-team line only; totals = the Over only.
+                let dest = match market.key.as_str() {
+                    "spreads" if o.name == ev.home_team => &mut spread,
+                    "totals" if o.name == "Over" => &mut total,
+                    "h2h" => &mut moneyline,
+                    _ => continue,
+                };
                 dest.push(BookLine {
                     book: bm.key.clone(),
                     american_odds: o.price as i32,

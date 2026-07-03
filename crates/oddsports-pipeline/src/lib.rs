@@ -36,7 +36,15 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
     let games = ingest::fetch_games(Sport::LAUNCH).await?;
     tracing::info!(games = games.len(), "fetched");
 
-    let model_outputs = model::run_model(&games); // sorted best-edge first
+    // Persist this fetch as a snapshot batch, then hand the model each game's
+    // full snapshot history (steam signal + honest line_history for /line).
+    store::save_line_snapshots(&db, &games)?;
+    let mut history = std::collections::HashMap::new();
+    for g in &games {
+        history.insert(g.id.clone(), store::line_history(&db, &g.id)?);
+    }
+
+    let model_outputs = model::run_model(&games, &history); // sorted best-edge first
     tracing::info!(edges = model_outputs.len(), "actionable edges");
 
     let mut picks = Vec::new();
@@ -132,4 +140,15 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
 
 pub fn today() -> NaiveDate {
     Utc::now().date_naive()
+}
+
+/// Lightweight snapshot pass — fetch current lines, persist, exit.
+/// Run every 15–30 min via cron/systemd timer. Zero AI cost; this is the
+/// data source for steam detection and closing-line (CLV) capture.
+pub async fn run_snapshot() -> Result<usize> {
+    let db = store::open_db()?;
+    let games = ingest::fetch_games(Sport::LAUNCH).await?;
+    let rows = store::save_line_snapshots(&db, &games)?;
+    tracing::info!(games = games.len(), rows, "snapshot saved");
+    Ok(rows)
 }
