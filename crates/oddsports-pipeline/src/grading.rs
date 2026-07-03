@@ -44,9 +44,52 @@ pub struct FinalScore {
     pub closing_spread: Option<f64>,
 }
 
-pub async fn fetch_final_scores(_date: &str) -> Result<Vec<FinalScore>> {
-    tracing::warn!("fetch_final_scores not implemented — returning empty");
-    Ok(vec![])
+pub async fn fetch_final_scores(sports: &[oddsports_shared::Sport]) -> Result<Vec<FinalScore>> {
+    let (Ok(base), Ok(key)) = (std::env::var("ODDS_API_BASE"), std::env::var("ODDS_API_KEY")) else {
+        tracing::warn!("ODDS_API_* not configured — cannot grade");
+        return Ok(vec![]);
+    };
+    let client = reqwest::Client::new();
+    let mut scores = Vec::new();
+
+    for sport in sports {
+        let url = format!(
+            "{base}/sports/{}/scores?daysFrom=2&apiKey={key}",
+            sport.odds_api_key()
+        );
+        let res = client.get(&url).send().await?;
+        if !res.status().is_success() {
+            tracing::warn!(sport = ?sport, status = %res.status(), "scores fetch skipped");
+            continue;
+        }
+        let events: Vec<serde_json::Value> = res.json().await?;
+        for ev in events {
+            if !ev["completed"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            let home_team = ev["home_team"].as_str().unwrap_or_default();
+            let parse_score = |team: &str| -> Option<i32> {
+                ev["scores"].as_array()?.iter().find_map(|s| {
+                    (s["name"].as_str() == Some(team))
+                        .then(|| s["score"].as_str()?.parse().ok())
+                        .flatten()
+                })
+            };
+            let away_team = ev["away_team"].as_str().unwrap_or_default();
+            let (Some(home_score), Some(away_score)) = (parse_score(home_team), parse_score(away_team)) else {
+                continue;
+            };
+            scores.push(FinalScore {
+                game_id: ev["id"].as_str().unwrap_or_default().to_string(),
+                home_score,
+                away_score,
+                // TODO(fable): capture true closing line via a pre-game snapshot
+                // just before start time; the scores endpoint doesn't carry it.
+                closing_spread: None,
+            });
+        }
+    }
+    Ok(scores)
 }
 
 /// Grade a date's slate. Idempotent — already-graded picks are skipped.
@@ -55,7 +98,13 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
         tracing::warn!(date, "no slate to grade");
         return Ok(0);
     };
-    let scores: HashMap<String, FinalScore> = fetch_final_scores(date)
+    let sports: Vec<oddsports_shared::Sport> = {
+        let mut v: Vec<_> = slate.picks.iter().map(|p| p.sport).collect();
+        v.sort_by_key(|s| s.odds_api_key());
+        v.dedup();
+        v
+    };
+    let scores: HashMap<String, FinalScore> = fetch_final_scores(&sports)
         .await?
         .into_iter()
         .map(|s| (s.game_id.clone(), s))
@@ -94,7 +143,7 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
                 score.closing_spread,
                 clv,
                 pick.body,
-                serde_json::to_string(&slate_sport(&slate, &pick.game_id))?,
+                serde_json::to_string(&pick.sport)?,
             ],
         )?;
     }
@@ -132,12 +181,6 @@ fn settle_spread(pick: &PickBlock, score: &FinalScore) -> GradeResult {
     } else {
         GradeResult::Push
     }
-}
-
-fn slate_sport(_slate: &DailySlate, _game_id: &str) -> Option<oddsports_shared::Sport> {
-    // NOTE: Sport isn't carried on PickBlock yet; Fable — add it there rather
-    // than threading Game through. Stored as NULL until then.
-    None
 }
 
 #[derive(Debug, Default)]

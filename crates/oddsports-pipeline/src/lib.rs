@@ -99,6 +99,8 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
 
             picks.push(PickBlock {
                 game_id: game.id.clone(),
+                sport: game.sport,
+                matchup: format!("{} @ {}", game.away, game.home),
                 min_tier: tier,
                 body,
                 confidence: mo.confidence,

@@ -125,6 +125,9 @@ pub struct LinePoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickBlock {
     pub game_id: String,
+    pub sport: Sport,
+    /// "Away @ Home" — used for fuzzy game matching in bot commands.
+    pub matchup: String,
     pub min_tier: Tier,
     /// Rendered markdown for this tier depth. Includes compliance footer.
     pub body: String,

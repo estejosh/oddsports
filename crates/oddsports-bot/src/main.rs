@@ -32,6 +32,12 @@ enum Command {
     Bankroll(String),
     #[command(description = "graded track record + yesterday's reveal (free)")]
     Record,
+    #[command(description = "model factor breakdown for a game (Analyst+)")]
+    Why(String),
+    #[command(description = "line movement for a game (Analyst+)")]
+    Line(String),
+    #[command(description = "raw model output for a game (Sharp)")]
+    Raw(String),
     #[command(description = "link your newsletter subscription")]
     Link(String),
     #[command(description = "complete linking")]
@@ -192,6 +198,61 @@ async fn handle(bot: &Bot, msg: &Message, cmd: Command, db: Db) -> Result<()> {
                 bot.send_message(msg.chat.id, chunk).await?;
             }
         }
+        Command::Why(query) => {
+            if !tier.can_access(Tier::Analyst) {
+                bot.send_message(msg.chat.id, upgrade_nudge(tier, Tier::Analyst)).await?;
+                return Ok(());
+            }
+            match find_pick(&db, tier, &query)? {
+                FindResult::One(p) => {
+                    let mut out = format!("🔍 *{}* — {}\n\nModel factors:\n", p.matchup, p.model.side);
+                    for f in &p.model.factors {
+                        let arrow = match f.direction {
+                            oddsports_shared::FactorDirection::For => "▲",
+                            oddsports_shared::FactorDirection::Against => "▼",
+                        };
+                        out.push_str(&format!("{arrow} {} (w{:.1}): {}\n", f.name, f.weight, f.detail));
+                    }
+                    out.push_str(&format!(
+                        "\nFair line {} vs market {} → edge {} pts\n\n{}",
+                        p.model.fair_line, p.model.picked_line, p.model.edge_pct, p.risk_warning
+                    ));
+                    bot.send_message(msg.chat.id, out).await?;
+                }
+                other => bot.send_message(msg.chat.id, other.message()).await.map(|_| ())?,
+            }
+        }
+        Command::Line(query) => {
+            if !tier.can_access(Tier::Analyst) {
+                bot.send_message(msg.chat.id, upgrade_nudge(tier, Tier::Analyst)).await?;
+                return Ok(());
+            }
+            match find_pick(&db, tier, &query)? {
+                FindResult::One(p) => {
+                    let mut out = format!("📈 *{}* — line history:\n", p.matchup);
+                    for pt in &p.model.line_history {
+                        out.push_str(&format!("• {} → {}\n", &pt.at[..16.min(pt.at.len())], pt.line));
+                    }
+                    bot.send_message(msg.chat.id, out).await?;
+                }
+                other => bot.send_message(msg.chat.id, other.message()).await.map(|_| ())?,
+            }
+        }
+        Command::Raw(query) => {
+            if !tier.can_access(Tier::Sharp) {
+                bot.send_message(msg.chat.id, upgrade_nudge(tier, Tier::Sharp)).await?;
+                return Ok(());
+            }
+            match find_pick(&db, tier, &query)? {
+                FindResult::One(p) => {
+                    let json = serde_json::to_string_pretty(&p.model)?;
+                    for chunk in chunk_str(&format!("```\n{json}\n```"), 4000) {
+                        bot.send_message(msg.chat.id, chunk).await?;
+                    }
+                }
+                other => bot.send_message(msg.chat.id, other.message()).await.map(|_| ())?,
+            }
+        }
         Command::Link(email) => {
             let email = email.trim();
             if !email.contains('@') {
@@ -258,6 +319,44 @@ fn picks_for(slate: &DailySlate, tier: Tier) -> Vec<PickBlock> {
             .or_insert(p);
     }
     by_game.into_values().cloned().collect()
+}
+
+enum FindResult {
+    One(PickBlock),
+    NoSlate,
+    NoMatch,
+    Ambiguous(Vec<String>),
+}
+
+impl FindResult {
+    fn message(&self) -> String {
+        match self {
+            FindResult::One(_) => unreachable!("handled by caller"),
+            FindResult::NoSlate => "Today's slate isn't out yet.".into(),
+            FindResult::NoMatch => "No pick matches that — try part of a team name, e.g. /why chiefs".into(),
+            FindResult::Ambiguous(names) => {
+                format!("Multiple matches — be more specific:\n{}", names.join("\n"))
+            }
+        }
+    }
+}
+
+/// Fuzzy game match: case-insensitive substring against "Away @ Home".
+fn find_pick(db: &Db, tier: Tier, query: &str) -> Result<FindResult> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Ok(FindResult::NoMatch);
+    }
+    let Some(slate) = today_slate(db)? else { return Ok(FindResult::NoSlate) };
+    let matches: Vec<PickBlock> = picks_for(&slate, tier)
+        .into_iter()
+        .filter(|p| p.matchup.to_lowercase().contains(&query))
+        .collect();
+    Ok(match matches.len() {
+        0 => FindResult::NoMatch,
+        1 => FindResult::One(matches.into_iter().next().unwrap()),
+        _ => FindResult::Ambiguous(matches.iter().map(|p| format!("• {}", p.matchup)).collect()),
+    })
 }
 
 fn upgrade_nudge(have: Tier, need: Tier) -> String {
