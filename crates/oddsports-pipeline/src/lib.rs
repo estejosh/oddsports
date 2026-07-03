@@ -21,7 +21,10 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
     let date_str = date.format("%Y-%m-%d").to_string();
     let db = store::open_db()?;
     let mut budget = budget::TokenBudget::from_env();
-    let client = reqwest::Client::new();
+    // CPU inference on a busy node can be slow but must never hang the run.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
 
     // Step 0: grade yesterday and build "The Record" reveal (PRD P0 #11).
     // Zero AI tokens — pure data. Reveal shows full paid-tier depth to ALL tiers.
@@ -45,12 +48,19 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
     }
 
     let model_outputs = model::run_model(&games, &history); // sorted best-edge first
-    tracing::info!(edges = model_outputs.len(), "actionable edges");
+    // Prose is the cost + latency driver (calls = picks × tier depths), so the
+    // slate takes only the best N edges. Raise the cap as inference throughput allows.
+    let max_picks: usize = std::env::var("MAX_PICKS_PER_DAY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let taking = model_outputs.len().min(max_picks);
+    tracing::info!(edges = model_outputs.len(), taking, "actionable edges");
 
     let mut picks = Vec::new();
     let mut stats = GenerationStats::default();
 
-    for (i, mo) in model_outputs.iter().enumerate() {
+    for (i, mo) in model_outputs.iter().take(max_picks).enumerate() {
         let game = games.iter().find(|g| g.id == mo.game_id).expect("game exists");
 
         // Tier depths to render. Free tier only gets top N picks.
@@ -61,7 +71,16 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
         };
 
         for &tier in tiers {
+            let started = std::time::Instant::now();
             let prose = prose::write_pick_prose(&client, game, mo, tier, &mut budget).await?;
+            tracing::info!(
+                pick = i + 1,
+                taking,
+                tier = ?tier,
+                game = %mo.side,
+                secs = started.elapsed().as_secs(),
+                "prose done"
+            );
             stats.input_tokens += prose.input_tokens;
             stats.output_tokens += prose.output_tokens;
 

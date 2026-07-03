@@ -115,31 +115,43 @@ pub async fn write_pick_prose(
             ]
         });
 
-        // Cold model loads surface as transient 5xx from the gateway — retry
-        // with backoff before failing the pick.
+        // Cold model loads surface as transient 5xx from the gateway, and a
+        // busy CPU node can time out entirely — retry with backoff, then fall
+        // back to the template rather than failing the whole daily run.
         let mut parsed: Option<ApiResponse> = None;
         for attempt in 0..3u32 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(10 * attempt as u64)).await;
             }
-            let res = client
+            let res = match client
                 .post(format!("{api_base}/v1/chat/completions"))
                 .header("Authorization", format!("Bearer {api_key}"))
                 .json(&body)
                 .send()
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, attempt, "BTCPC request failed — retrying");
+                    continue;
+                }
+            };
             let status = res.status();
-            if status.is_server_error() && attempt < 2 {
+            if status.is_server_error() {
                 tracing::warn!(%status, attempt, "BTCPC inference 5xx — retrying");
                 continue;
             }
             if !status.is_success() {
+                // 4xx = config problem (bad key, unknown model) — surface it loudly.
                 bail!("BTCPC inference {}: {}", status, res.text().await.unwrap_or_default());
             }
             parsed = Some(res.json().await?);
             break;
         }
-        let parsed = parsed.expect("loop either sets parsed or bails");
+        let Some(parsed) = parsed else {
+            tracing::warn!(game = %game.id, tier = ?tier, "inference unreachable — template fallback");
+            return Ok(template_fallback(model_out));
+        };
         budget.record(&llm_model, parsed.usage.prompt_tokens, parsed.usage.completion_tokens)?;
         tracing::debug!(model = %llm_model, fee_dreams = parsed.usage.fee_dreams, "inference fee");
         totals.0 += parsed.usage.prompt_tokens;
