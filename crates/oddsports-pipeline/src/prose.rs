@@ -141,8 +141,15 @@ pub async fn write_pick_prose(
                 tracing::warn!(%status, attempt, "BTCPC inference 5xx — retrying");
                 continue;
             }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                // Per-IP rate limit is shared with everything else on this box
+                // (node sync, other bots) — wait out the window and retry.
+                tracing::warn!(attempt, "BTCPC rate limited — waiting 65s");
+                tokio::time::sleep(std::time::Duration::from_secs(65)).await;
+                continue;
+            }
             if !status.is_success() {
-                // 4xx = config problem (bad key, unknown model) — surface it loudly.
+                // Other 4xx = config problem (bad key, unknown model) — surface it loudly.
                 bail!("BTCPC inference {}: {}", status, res.text().await.unwrap_or_default());
             }
             parsed = Some(res.json().await?);
