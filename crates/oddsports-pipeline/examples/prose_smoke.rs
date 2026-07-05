@@ -1,4 +1,4 @@
-//! Smoke test for the BTCPC inference path: builds a synthetic game and
+//! Smoke test for the HONE inference path: builds a synthetic game and
 //! model output, then generates prose at every tier depth.
 //!
 //!     cargo run -p oddsports-pipeline --example prose_smoke

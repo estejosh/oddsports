@@ -3,10 +3,11 @@
 //! The LLM receives structured factors from the deterministic model and
 //! turns them into readable prose — it never invents numbers or picks.
 //!
-//! BTCPC inference gateway (OpenAI-compatible /v1/chat/completions) via
-//! plain reqwest — no SDK needed. Point BTCPC_API_BASE at a local
-//! btcpc-node (default) or the hosted gateway; fees bill in dreams to
-//! the account behind BTCPC_API_KEY, not USD.
+//! HONE inference gateway (OpenAI-compatible /v1/chat/completions) via
+//! plain reqwest — no SDK needed. HoneMesh, formerly BTCPC — legacy
+//! BTCPC_* env vars still work. Point HONE_API_BASE at a local node
+//! (default) or the hosted gateway; fees bill in hunits to the account
+//! behind HONE_API_KEY, not USD.
 
 use crate::budget::TokenBudget;
 use anyhow::{bail, Result};
@@ -52,9 +53,10 @@ struct ChoiceMessage {
 struct Usage {
     prompt_tokens: u64,
     completion_tokens: u64,
-    /// BTCPC-specific: inference fee debited from the account, in dreams.
-    #[serde(default)]
-    fee_dreams: u64,
+    /// HONE-specific: inference fee debited from the account, in hunits
+    /// (pre-rebrand nodes still say dreams).
+    #[serde(default, alias = "fee_dreams")]
+    fee_hunits: u64,
 }
 
 /// Deterministic, always-compliant fallback — used on budget exhaustion
@@ -93,8 +95,10 @@ pub async fn write_pick_prose(
         env::var("MODEL_CHEAP").unwrap_or_else(|_| "gemma4:latest".into())
     };
 
-    let api_base = env::var("BTCPC_API_BASE").unwrap_or_else(|_| "http://localhost:4242".into());
-    let api_key = env::var("BTCPC_API_KEY")?;
+    let api_base = env::var("HONE_API_BASE")
+        .or_else(|_| env::var("BTCPC_API_BASE"))
+        .unwrap_or_else(|_| "http://localhost:4242".into());
+    let api_key = env::var("HONE_API_KEY").or_else(|_| env::var("BTCPC_API_KEY"))?;
     let user_content = format!(
         "Depth: {depth}\nGame: {} @ {} ({:?}, starts {})\nModel output:\n{}",
         game.away, game.home, game.sport, game.starts_at,
@@ -132,25 +136,25 @@ pub async fn write_pick_prose(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(error = %e, attempt, "BTCPC request failed — retrying");
+                    tracing::warn!(error = %e, attempt, "HONE request failed — retrying");
                     continue;
                 }
             };
             let status = res.status();
             if status.is_server_error() {
-                tracing::warn!(%status, attempt, "BTCPC inference 5xx — retrying");
+                tracing::warn!(%status, attempt, "HONE inference 5xx — retrying");
                 continue;
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 // Per-IP rate limit is shared with everything else on this box
                 // (node sync, other bots) — wait out the window and retry.
-                tracing::warn!(attempt, "BTCPC rate limited — waiting 65s");
+                tracing::warn!(attempt, "HONE rate limited — waiting 65s");
                 tokio::time::sleep(std::time::Duration::from_secs(65)).await;
                 continue;
             }
             if !status.is_success() {
                 // Other 4xx = config problem (bad key, unknown model) — surface it loudly.
-                bail!("BTCPC inference {}: {}", status, res.text().await.unwrap_or_default());
+                bail!("HONE inference {}: {}", status, res.text().await.unwrap_or_default());
             }
             parsed = Some(res.json().await?);
             break;
@@ -160,7 +164,7 @@ pub async fn write_pick_prose(
             return Ok(template_fallback(model_out));
         };
         budget.record(&llm_model, parsed.usage.prompt_tokens, parsed.usage.completion_tokens)?;
-        tracing::debug!(model = %llm_model, fee_dreams = parsed.usage.fee_dreams, "inference fee");
+        tracing::debug!(model = %llm_model, fee_hunits = parsed.usage.fee_hunits, "inference fee");
         totals.0 += parsed.usage.prompt_tokens;
         totals.1 += parsed.usage.completion_tokens;
 
@@ -170,7 +174,8 @@ pub async fn write_pick_prose(
             .map(|c| c.message.content.trim().to_string())
             .unwrap_or_default();
         if text.is_empty() {
-            // The gateway can return 200 with empty content (e.g. model warm-up).
+            // The gateway can return 200 with empty content (e.g. model warm-up,
+            // or a model name no worker serves).
             tracing::warn!(model = %llm_model, lint_attempt, "empty completion — retrying");
             continue;
         }

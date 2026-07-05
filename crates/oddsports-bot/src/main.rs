@@ -44,6 +44,8 @@ enum Command {
     Verify(String),
     #[command(description = "responsible gambling resources")]
     Rg,
+    #[command(description = "render any tier's daily view (admin, pre-launch)")]
+    Preview(String),
 }
 
 /// Connection is not Sync — a Mutex is fine at bot request rates.
@@ -268,6 +270,60 @@ async fn handle(bot: &Bot, msg: &Message, cmd: Command, db: Db) -> Result<()> {
             }
             bot.send_message(msg.chat.id, "📧 Check your email for a verification token, then send: /verify <token>").await?;
         }
+        Command::Preview(arg) => {
+            // Pre-Beehiiv preview: see exactly what each tier receives without a
+            // subscription behind it. Admin-gated once TELEGRAM_ADMIN_IDS is set.
+            if !is_admin(user_id) {
+                bot.send_message(msg.chat.id, "/preview is admin-only.").await?;
+                return Ok(());
+            }
+            let arg = arg.trim();
+            if arg.is_empty() {
+                bot.send_message(msg.chat.id, "Usage: /preview free|starter|analyst|sharp").await?;
+                return Ok(());
+            }
+            let want = Tier::from_beehiiv_name(arg);
+            if want == Tier::Free && !arg.eq_ignore_ascii_case("free") {
+                bot.send_message(msg.chat.id, format!("Unknown tier '{arg}'. Use free, starter, analyst, or sharp.")).await?;
+                return Ok(());
+            }
+            let Some(slate) = today_slate(&db)? else {
+                bot.send_message(msg.chat.id, "Today's slate isn't out yet — run the pipeline first.").await?;
+                return Ok(());
+            };
+
+            bot.send_message(
+                msg.chat.id,
+                format!(
+                    "📧 PREVIEW — the {} experience for {} (this is what that tier's newsletter/channel receives)",
+                    want.name(),
+                    slate.date
+                ),
+            )
+            .await?;
+
+            // The Record reveal leads every send, all tiers (PRD P0 #11).
+            let reveal = {
+                let db = db.lock().unwrap();
+                let yesterday = (Utc::now().date_naive() - Duration::days(1)).format("%Y-%m-%d").to_string();
+                build_reveal_post(&db, &yesterday)?
+            };
+            for chunk in chunk_str(&reveal, 4000) {
+                bot.send_message(msg.chat.id, chunk).await?;
+            }
+
+            let mut picks = picks_for(&slate, want);
+            picks.sort_by(|a, b| b.confidence.cmp(&a.confidence).then(a.matchup.cmp(&b.matchup)));
+            let shown: Vec<_> = if want == Tier::Free { picks.into_iter().take(5).collect() } else { picks };
+            for p in &shown {
+                for chunk in chunk_str(&p.body, 4000) {
+                    bot.send_message(msg.chat.id, chunk).await?;
+                }
+            }
+            if let Some(next) = want.next() {
+                bot.send_message(msg.chat.id, upgrade_nudge(want, next)).await?;
+            }
+        }
         Command::Verify(token) => {
             let token = token.trim().to_string();
             if token.is_empty() {
@@ -292,6 +348,21 @@ async fn handle(bot: &Bot, msg: &Message, cmd: Command, db: Db) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Admin gate: TELEGRAM_ADMIN_IDS is a comma-separated list of Telegram user
+/// ids. Unset = pre-launch mode, everyone is admin (logged loudly).
+fn is_admin(user_id: i64) -> bool {
+    match std::env::var("TELEGRAM_ADMIN_IDS") {
+        Ok(ids) => ids
+            .split(',')
+            .filter_map(|s| s.trim().parse::<i64>().ok())
+            .any(|id| id == user_id),
+        Err(_) => {
+            tracing::warn!("TELEGRAM_ADMIN_IDS unset — admin commands open to everyone (pre-launch mode)");
+            true
+        }
+    }
 }
 
 /// Block on a future from sync context (used only where a Mutex guard can't cross await).
