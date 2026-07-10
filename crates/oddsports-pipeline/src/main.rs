@@ -10,6 +10,14 @@ async fn main() -> Result<()> {
             let rows = oddsports_pipeline::run_snapshot().await?;
             println!("snapshot: {rows} line rows saved");
         }
+        // `oddsports-pipeline grade` — grading catch-up only; no slate
+        // generation, no AI spend. Safe to run any time.
+        Some("grade") => {
+            let db = oddsports_pipeline::store::open_db()?;
+            let today = oddsports_pipeline::today().format("%Y-%m-%d").to_string();
+            let dates = oddsports_pipeline::run_grading(&db, &today).await?;
+            println!("graded catch-up over {} slate date(s)", dates.len());
+        }
         // Default: full daily generation pass.
         _ => {
             let slate = oddsports_pipeline::run_daily_pipeline(oddsports_pipeline::today()).await?;

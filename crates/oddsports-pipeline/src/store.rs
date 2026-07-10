@@ -70,6 +70,15 @@ pub fn save_slate(db: &Connection, slate: &DailySlate) -> Result<()> {
     Ok(())
 }
 
+/// All slate dates strictly before `before`, ascending — the grading
+/// catch-up set. Grading is idempotent, so re-listing already-graded
+/// dates is free.
+pub fn slate_dates_before(db: &Connection, before: &str) -> Result<Vec<String>> {
+    let mut stmt = db.prepare("SELECT date FROM slates WHERE date < ?1 ORDER BY date")?;
+    let rows = stmt.query_map(params![before], |r| r.get(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
 pub fn load_slate(db: &Connection, date: &str) -> Result<Option<DailySlate>> {
     let json: Option<String> = db
         .query_row("SELECT json FROM slates WHERE date = ?1", params![date], |r| r.get(0))

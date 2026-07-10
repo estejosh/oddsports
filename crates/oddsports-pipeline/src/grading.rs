@@ -35,7 +35,7 @@ impl GradeResult {
 }
 
 /// Final scores keyed by game id.
-/// TODO(fable): fetch from the odds API scores endpoint (GET /sports/{key}/scores?daysFrom=1).
+#[derive(Clone)]
 pub struct FinalScore {
     pub game_id: String,
     pub home_score: i32,
@@ -53,8 +53,10 @@ pub async fn fetch_final_scores(sports: &[oddsports_shared::Sport]) -> Result<Ve
     let mut scores = Vec::new();
 
     for sport in sports {
+        // daysFrom=3 is the API max — grading catches up on missed days, but
+        // anything older than the score history window is lost for good.
         let url = format!(
-            "{base}/sports/{}/scores?daysFrom=2&apiKey={key}",
+            "{base}/sports/{}/scores?daysFrom=3&apiKey={key}",
             sport.odds_api_key()
         );
         let res = client.get(&url).send().await?;
@@ -110,9 +112,41 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
         .map(|s| (s.game_id.clone(), s))
         .collect();
 
+    // Oracle v0 (docs/SPORTS_ORACLE.md): public sources cover what the odds
+    // API no longer has — its score history is ~3 days, ESPN's goes back
+    // years. Query the slate date and the day after (games cross midnight UTC).
+    let client = reqwest::Client::new();
+    let mut dates = vec![date.to_string()];
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+        dates.push((d + chrono::Duration::days(1)).format("%Y-%m-%d").to_string());
+    }
+    let public = crate::scores::fetch_public_scores(&client, &sports, &dates).await?;
+
     let mut graded = 0;
     for pick in deepest_blocks(&slate) {
-        let Some(score) = scores.get(&pick.game_id) else { continue }; // not settled yet
+        let api = scores.get(&pick.game_id);
+        let pub_score = crate::scores::lookup(&public, &pick.matchup);
+        let score: FinalScore = match (api, pub_score) {
+            // Sources contradict → never grade from disputed data.
+            (Some(a), Some((h, aw))) if (a.home_score, a.away_score) != (h, aw) => {
+                tracing::warn!(
+                    game = %pick.matchup,
+                    api = format!("{}-{}", a.home_score, a.away_score),
+                    public = format!("{h}-{aw}"),
+                    "score sources disagree — leaving unsettled"
+                );
+                continue;
+            }
+            (Some(a), _) => a.clone(),
+            (None, Some((h, aw))) => FinalScore {
+                game_id: pick.game_id.clone(),
+                home_score: h,
+                away_score: aw,
+                closing_spread: None,
+            },
+            (None, None) => continue, // not settled yet
+        };
+        let score = &score;
 
         // Closing line: prefer our own captured snapshot (median at last batch
         // before start) — the scores endpoint doesn't carry closing lines.

@@ -3,10 +3,11 @@ pub mod grading;
 pub mod ingest;
 pub mod model;
 pub mod prose;
+pub mod scores;
 pub mod store;
 
 use anyhow::Result;
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use oddsports_shared::{
     assert_compliant, available_books, compliance_footer, tracked_link, BookRef, DailySlate,
     GenerationStats, LinkContext, PickBlock, Sport, Tier,
@@ -26,11 +27,15 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    // Step 0: grade yesterday and build "The Record" reveal (PRD P0 #11).
-    // Zero AI tokens — pure data. Reveal shows full paid-tier depth to ALL tiers.
-    let yesterday = (date - Duration::days(1)).format("%Y-%m-%d").to_string();
-    grading::grade_slate(&db, &yesterday).await?;
-    let reveal = grading::build_reveal_post(&db, &yesterday)?;
+    // Step 0: grade EVERY past slate, not just yesterday (PRD P0 #11).
+    // Idempotent per pick, zero AI tokens.
+    let past_dates = run_grading(&db, &date_str).await?;
+    // Reveal covers the most recent past slate (usually yesterday). Shows
+    // full paid-tier depth to ALL tiers.
+    let reveal = match past_dates.last() {
+        Some(d) => grading::build_reveal_post(&db, d)?,
+        None => String::new(),
+    };
     tracing::info!(chars = reveal.len(), "reveal ready");
     // TODO(fable): publish reveal to free Telegram channel + top of today's
     // email for every tier. Immutable once posted — never edit past reveals.
@@ -159,6 +164,17 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
 
 pub fn today() -> NaiveDate {
     Utc::now().date_naive()
+}
+
+/// Grade every slate before `before` (idempotent). Returns the dates
+/// considered, ascending. Callable standalone via the `grade` subcommand —
+/// catch up on grading without regenerating (and re-paying for) a slate.
+pub async fn run_grading(db: &rusqlite::Connection, before: &str) -> Result<Vec<String>> {
+    let past_dates = store::slate_dates_before(db, before)?;
+    for d in &past_dates {
+        grading::grade_slate(db, d).await?;
+    }
+    Ok(past_dates)
 }
 
 /// Lightweight snapshot pass — fetch current lines, persist, exit.
