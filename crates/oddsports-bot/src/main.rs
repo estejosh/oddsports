@@ -463,3 +463,86 @@ fn chunk_str(s: &str, max: usize) -> Vec<&str> {
     chunks.push(rest);
     chunks
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_input_is_a_single_chunk() {
+        assert_eq!(chunk_str("hello", 10), vec!["hello"]);
+        assert_eq!(chunk_str("", 10), vec![""]);
+    }
+
+    #[test]
+    fn ascii_chunks_respect_the_cap() {
+        let s = "a".repeat(9_500);
+        for c in chunk_str(&s, 4000) {
+            assert!(c.len() <= 4000);
+        }
+        assert_eq!(chunk_str(&s, 4000).concat(), s);
+    }
+
+    #[test]
+    fn multibyte_content_never_splits_a_char() {
+        // 4-byte emoji straddling every 4000-byte boundary.
+        let s = "🏀".repeat(2_001);
+        let chunks = chunk_str(&s, 4000);
+        assert_eq!(chunks.concat(), s);
+        for c in &chunks {
+            assert!(c.chars().all(|ch| ch == '🏀'));
+            assert!(c.len() <= 4000);
+        }
+    }
+
+    #[test]
+    fn picks_serve_deepest_accessible_depth_per_game() {
+        use oddsports_shared::{MarketType, ModelOutput, PickTeam, Sport};
+        let block = |game: &str, tier: Tier| PickBlock {
+            game_id: game.into(),
+            sport: Sport::Nfl,
+            matchup: "A @ B".into(),
+            min_tier: tier,
+            body: String::new(),
+            confidence: 3,
+            risk_warning: String::new(),
+            model: ModelOutput {
+                game_id: game.into(),
+                market: MarketType::Spread,
+                side: "B -3".into(),
+                pick_team: PickTeam::Home,
+                picked_line: -3.0,
+                fair_line: -4.0,
+                edge_pct: 1.0,
+                confidence: 3,
+                suggested_units: 0.5,
+                factors: vec![],
+                line_history: vec![],
+            },
+            links: vec![],
+        };
+        let slate = DailySlate {
+            date: "2026-08-21".into(),
+            picks: vec![block("g1", Tier::Free), block("g1", Tier::Analyst), block("g2", Tier::Starter)],
+            generation: Default::default(),
+        };
+        // Free sees only its depth of g1 and nothing of g2.
+        let free = picks_for(&slate, Tier::Free);
+        assert_eq!(free.len(), 1);
+        assert_eq!(free[0].min_tier, Tier::Free);
+        // Analyst sees the deepest block per game: Analyst-depth g1, Starter-depth g2.
+        let mut analyst = picks_for(&slate, Tier::Analyst);
+        analyst.sort_by(|a, b| a.game_id.cmp(&b.game_id));
+        assert_eq!(analyst.len(), 2);
+        assert_eq!(analyst[0].min_tier, Tier::Analyst);
+        assert_eq!(analyst[1].min_tier, Tier::Starter);
+    }
+
+    #[test]
+    fn upgrade_nudge_quotes_the_next_tier_and_price() {
+        let nudge = upgrade_nudge(Tier::Analyst, Tier::Sharp);
+        assert!(nudge.contains("Sharp"));
+        assert!(nudge.contains("129"));
+        assert!(!nudge.contains("Starter"));
+    }
+}

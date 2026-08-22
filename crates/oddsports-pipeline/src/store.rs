@@ -14,6 +14,13 @@ pub fn open_db() -> Result<Connection> {
     }
     let db = Connection::open(&path)?;
     db.pragma_update(None, "journal_mode", "WAL")?;
+    init_schema(&db)?;
+    Ok(db)
+}
+
+/// Shared by open_db and the in-memory test harness so tests exercise the
+/// exact production DDL.
+fn init_schema(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS slates (
             date TEXT PRIMARY KEY,
@@ -59,7 +66,7 @@ pub fn open_db() -> Result<Connection> {
             PRIMARY KEY (date, game_id, side)
         );",
     )?;
-    Ok(db)
+    Ok(())
 }
 
 pub fn save_slate(db: &Connection, slate: &DailySlate) -> Result<()> {
@@ -249,4 +256,120 @@ pub fn set_bankroll(db: &Connection, telegram_user_id: i64, bankroll_usd: f64) -
         params![bankroll_usd, telegram_user_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oddsports_shared::Subscriber;
+
+    fn mem_db() -> Connection {
+        let db = Connection::open_in_memory().expect("in-memory db");
+        init_schema(&db).expect("schema");
+        db
+    }
+
+    /// Direct snapshot inserts — save_line_snapshots stamps its own taken_at,
+    /// and these tests need deterministic batch timestamps.
+    fn insert_batch(db: &Connection, game_id: &str, starts_at: &str, taken_at: &str, lines: &[f64]) {
+        for (i, line) in lines.iter().enumerate() {
+            db.execute(
+                "INSERT INTO line_snapshots (game_id, sport, starts_at, book, home_line, taken_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![game_id, "\"nfl\"", starts_at, format!("book{i}"), line, taken_at],
+            )
+            .expect("insert snapshot");
+        }
+    }
+
+    #[test]
+    fn slate_round_trips_through_json() {
+        let db = mem_db();
+        let slate = DailySlate { date: "2026-08-21".into(), picks: vec![], generation: Default::default() };
+        save_slate(&db, &slate).unwrap();
+        let loaded = load_slate(&db, "2026-08-21").unwrap().unwrap();
+        assert_eq!(loaded.date, "2026-08-21");
+        assert!(load_slate(&db, "2026-08-20").unwrap().is_none());
+        assert!(slate_dates_before(&db, "2026-08-22").unwrap() == vec!["2026-08-21".to_string()]);
+    }
+
+    #[test]
+    fn upsert_preserves_existing_telegram_and_bankroll() {
+        let db = mem_db();
+        let sub = Subscriber {
+            beehiiv_id: "b1".into(),
+            email: "a@example.com".into(),
+            tier: Tier::Analyst,
+            telegram_user_id: Some(42),
+            bankroll_usd: None,
+            linked_at: Some("t".into()),
+        };
+        upsert_subscriber(&db, &sub).unwrap();
+        // Re-sync: tier update, no telegram id, bankroll now known.
+        let updated = Subscriber { tier: Tier::Sharp, telegram_user_id: None, bankroll_usd: Some(5000.0), ..sub };
+        upsert_subscriber(&db, &updated).unwrap();
+
+        let got = get_subscriber_by_telegram(&db, 42).unwrap().unwrap();
+        assert_eq!(got.tier, Tier::Sharp); // updated
+        assert_eq!(got.bankroll_usd, Some(5000.0)); // updated
+        assert_eq!(got.telegram_user_id, Some(42)); // COALESCE kept the binding
+    }
+
+    #[test]
+    fn line_history_medians_per_batch() {
+        let db = mem_db();
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T18:00:00+00:00", &[-4.0, -4.5, -5.0]);
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T19:00:00+00:00", &[-5.5, -6.0, -6.5]);
+        let h = line_history(&db, "g1").unwrap();
+        assert_eq!(h.len(), 2);
+        assert_eq!((h[0].line, h[1].line), (-4.5, -6.0));
+    }
+
+    #[test]
+    fn closing_line_excludes_post_kickoff_snapshots_across_offset_formats() {
+        // Regression for the "+00:00" vs "Z" lexicographic bug: the 20:05
+        // batch sorts before "…T20:00:00Z" as a string and used to be picked
+        // as the closing line even though it was captured after kickoff.
+        let db = mem_db();
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T19:55:00+00:00", &[-4.0, -5.0, -6.0]);
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T20:05:00+00:00", &[99.0, 100.0, 101.0]);
+        assert_eq!(closing_spread(&db, "g1").unwrap(), Some(-5.0));
+    }
+
+    #[test]
+    fn closing_line_is_none_without_a_pre_kickoff_batch() {
+        let db = mem_db();
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T20:05:00+00:00", &[1.0, 2.0]);
+        assert_eq!(closing_spread(&db, "g1").unwrap(), None);
+    }
+
+    #[test]
+    fn closing_line_median_of_last_pre_kickoff_batch() {
+        let db = mem_db();
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T18:00:00+00:00", &[-3.0, -3.5, -4.0]);
+        insert_batch(&db, "g1", "2026-08-22T20:00:00Z", "2026-08-22T19:59:00+00:00", &[-5.0, -5.5, -6.0]);
+        assert_eq!(closing_spread(&db, "g1").unwrap(), Some(-5.5));
+    }
+
+    #[test]
+    fn bankroll_update_targets_the_right_subscriber() {
+        let db = mem_db();
+        for (id, beehiiv) in [(7i64, "b7"), (8, "b8")] {
+            upsert_subscriber(
+                &db,
+                &Subscriber {
+                    beehiiv_id: beehiiv.into(),
+                    email: format!("{beehiiv}@example.com"),
+                    tier: Tier::Sharp,
+                    telegram_user_id: Some(id),
+                    bankroll_usd: None,
+                    linked_at: None,
+                },
+            )
+            .unwrap();
+        }
+        set_bankroll(&db, 8, 2500.0).unwrap();
+        assert_eq!(get_subscriber_by_telegram(&db, 7).unwrap().unwrap().bankroll_usd, None);
+        assert_eq!(get_subscriber_by_telegram(&db, 8).unwrap().unwrap().bankroll_usd, Some(2500.0));
+    }
 }

@@ -52,3 +52,42 @@ fn urlencode(s: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> LinkContext<'static> {
+        LinkContext { surface: "email", tier: "sharp", game_id: Some("g1"), subscriber_ref: None }
+    }
+
+    #[test]
+    fn unknown_book_yields_no_link() {
+        assert!(tracked_link("draftkings", &ctx()).is_none());
+        assert!(tracked_link("", &ctx()).is_none());
+    }
+
+    #[test]
+    fn betchu_link_carries_urlencoded_sub_payload() {
+        let url = tracked_link("Betchu", &ctx()).expect("betchu is always available");
+        assert!(url.contains("?sub="));
+        let sub = url.split("sub=").nth(1).unwrap();
+        // No raw separators that would break the query string.
+        assert!(!sub.contains('&') && !sub.contains('?'));
+        // Round-trips to the plain payload.
+        let decoded = sub.replace("%40", "@");
+        assert!(decoded.contains("email_sharp_g1"));
+    }
+
+    #[test]
+    fn sub_id_encodes_specials_and_keeps_unreserved() {
+        assert_eq!(urlencode("a_b-c.d~e"), "a_b-c.d~e");
+        assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+        assert_eq!(urlencode("é"), "%C3%A9"); // multi-byte, per-byte percent-encoding
+    }
+
+    #[test]
+    fn available_books_includes_betchu_case_insensitively_matched() {
+        assert!(available_books().iter().any(|b| b.eq_ignore_ascii_case("BETCHU")));
+    }
+}
