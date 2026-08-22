@@ -3,6 +3,20 @@
 //! never skip compliance blocks).
 
 use std::env;
+use std::sync::OnceLock;
+
+/// Warn once per run instead of erroring per call: by the time a response is
+/// being recorded the spend already happened — aborting the remaining picks
+/// recovers nothing and loses the day's slate.
+fn warn_unknown_pricing(model: &str) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        tracing::warn!(
+            model,
+            "no pricing entry — recording $0; DAILY_TOKEN_BUDGET_USD will NOT bound this model"
+        );
+    }
+}
 
 /// $/MTok — keep in sync with https://docs.anthropic.com/en/docs/about-claude/pricing
 fn pricing(model: &str) -> Option<(f64, f64)> {
@@ -42,7 +56,13 @@ impl TokenBudget {
 
     /// Record a call's usage; returns its cost. Logs an alert once at threshold.
     pub fn record(&mut self, model: &str, input_tokens: u64, output_tokens: u64) -> anyhow::Result<f64> {
-        let (inp, out) = pricing(model).ok_or_else(|| anyhow::anyhow!("unknown model pricing: {model}"))?;
+        let (inp, out) = match pricing(model) {
+            Some(p) => p,
+            None => {
+                warn_unknown_pricing(model);
+                (0.0, 0.0)
+            }
+        };
         let cost = (input_tokens as f64 * inp + output_tokens as f64 * out) / 1_000_000.0;
         self.spent_usd += cost;
         if !self.alerted && self.spent_usd >= self.ceiling_usd * self.alert_threshold {
