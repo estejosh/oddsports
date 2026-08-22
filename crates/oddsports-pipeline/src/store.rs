@@ -184,25 +184,59 @@ pub fn line_history(db: &Connection, game_id: &str) -> Result<Vec<oddsports_shar
 /// Closing line: median of the latest snapshot batch at or before game start.
 /// This is what makes CLV grading honest — captured live, not reconstructed.
 pub fn closing_spread(db: &Connection, game_id: &str) -> Result<Option<f64>> {
-    let latest: Option<String> = db
+    let starts_at: Option<String> = db
         .query_row(
-            "SELECT MAX(taken_at) FROM line_snapshots
-             WHERE game_id = ?1 AND taken_at <= starts_at",
+            "SELECT MAX(starts_at) FROM line_snapshots WHERE game_id = ?1",
             params![game_id],
             |r| r.get(0),
         )
         .optional()?
         .flatten();
-    let Some(taken_at) = latest else { return Ok(None) };
+
+    // Batches are ordered by taken_at, but "at or before start" must be an
+    // INSTANT comparison: our writes end in "+00:00" while odds-API starts_at
+    // ends in "Z", and '+00:00' < 'Z' lexicographically — a string compare
+    // classified post-kickoff snapshots as pre-start (S-04). Fall back to the
+    // legacy byte compare only when a timestamp doesn't parse.
+    let start_instant = starts_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let at_or_before_start = |taken_at: &str| -> bool {
+        match (
+            chrono::DateTime::parse_from_rfc3339(taken_at).ok(),
+            start_instant,
+            starts_at.as_deref(),
+        ) {
+            (Some(t), Some(s), _) => t <= s,
+            (_, _, Some(s)) => taken_at <= s,
+            _ => true,
+        }
+    };
 
     let mut stmt = db.prepare(
-        "SELECT home_line FROM line_snapshots
-         WHERE game_id = ?1 AND taken_at = ?2 ORDER BY home_line",
+        "SELECT taken_at, home_line FROM line_snapshots
+         WHERE game_id = ?1 ORDER BY taken_at, home_line",
     )?;
-    let lines: Vec<f64> = stmt
-        .query_map(params![game_id, taken_at], |r| r.get(0))?
+    let rows: Vec<(String, f64)> = stmt
+        .query_map(params![game_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<std::result::Result<_, _>>()?;
+
+    let mut closing: Option<(String, Vec<f64>)> = None;
+    let mut i = 0;
+    while i < rows.len() {
+        let at = rows[i].0.clone();
+        if !at_or_before_start(&at) {
+            break;
+        }
+        let batch: Vec<f64> = rows[i..].iter().take_while(|(t, _)| *t == at).map(|(_, l)| *l).collect();
+        i += batch.len();
+        closing = Some((at.clone(), batch));
+    }
+    let Some((taken_at, lines)) = closing else {
+        return Ok(None);
+    };
     if lines.is_empty() {
+        tracing::debug!(game_id, taken_at, "closing snapshot batch empty");
         return Ok(None);
     }
     let mid = lines.len() / 2;
