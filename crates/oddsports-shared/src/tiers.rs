@@ -87,3 +87,48 @@ impl Tier {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ladder_orders_and_gates_correctly() {
+        assert!(Tier::Free < Tier::Starter && Tier::Starter < Tier::Analyst && Tier::Analyst < Tier::Sharp);
+        assert!(Tier::Analyst.can_access(Tier::Starter));
+        assert!(!Tier::Starter.can_access(Tier::Analyst));
+        assert!(Tier::Sharp.can_access(Tier::Sharp));
+    }
+
+    #[test]
+    fn next_walks_the_ladder_and_stops_at_sharp() {
+        let mut tier = Tier::Free;
+        let mut steps = 0;
+        while let Some(next) = tier.next() {
+            tier = next;
+            steps += 1;
+            assert!(steps <= 3);
+        }
+        assert_eq!((steps, tier), (3, Tier::Sharp));
+    }
+
+    #[test]
+    fn beehiiv_names_are_case_insensitive_and_known_names_map_off_free() {
+        // Known names must never degrade a paying subscriber to Free.
+        for name in ["starter", "STARTER", "analyst", "Sharp"] {
+            assert_ne!(Tier::from_beehiiv_name(name), Tier::Free, "case handling broke for {name}");
+        }
+        assert_eq!(Tier::from_beehiiv_name("starter"), Tier::Starter);
+        assert_eq!(Tier::from_beehiiv_name("SHARP"), Tier::Sharp);
+        // Unknown → Free is the safe direction: degrade, never upgrade silently.
+        assert_eq!(Tier::from_beehiiv_name("mystery-tier"), Tier::Free);
+        assert_eq!(Tier::from_beehiiv_name(""), Tier::Free);
+    }
+
+    #[test]
+    fn paid_tiers_have_prices_free_does_not() {
+        assert_eq!(Tier::Free.price_usd(), None);
+        assert!(Tier::Starter.price_usd().unwrap() < Tier::Analyst.price_usd().unwrap());
+        assert!(Tier::Analyst.price_usd().unwrap() < Tier::Sharp.price_usd().unwrap());
+    }
+}

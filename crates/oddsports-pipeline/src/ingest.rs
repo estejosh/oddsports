@@ -45,7 +45,13 @@ pub async fn fetch_games(sports: &[Sport]) -> Result<Vec<Game>> {
         return Ok(vec![]);
     };
 
-    let client = reqwest::Client::new();
+    // The daily generation pass runs ONCE — a transient blip here would
+    // permanently thin today's slate. Retry transient failures, skip a sport
+    // outright only when it stays down, and never let one malformed response
+    // abort the remaining sports.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
     let mut games = Vec::new();
 
     for sport in sports {
@@ -53,12 +59,39 @@ pub async fn fetch_games(sports: &[Sport]) -> Result<Vec<Game>> {
             "{base}/sports/{}/odds?regions=us&markets=h2h,spreads,totals&oddsFormat=american&apiKey={key}",
             sport.odds_api_key()
         );
-        let res = client.get(&url).send().await?;
+        let mut res = None;
+        for attempt in 0..3u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+            }
+            match client.get(&url).send().await {
+                Ok(r) if r.status().is_server_error() || r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                    tracing::warn!(sport = ?sport, status = %r.status(), attempt, "odds api transient failure — retrying");
+                }
+                Ok(r) => {
+                    res = Some(r);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(sport = ?sport, error = %e, attempt, "odds api unreachable — retrying");
+                }
+            }
+        }
+        let Some(res) = res else {
+            tracing::warn!(sport = ?sport, "skipping sport after retries");
+            continue;
+        };
         if !res.status().is_success() {
             tracing::warn!(sport = ?sport, status = %res.status(), "skipping sport");
             continue;
         }
-        let events: Vec<ApiEvent> = res.json().await?;
+        let events: Vec<ApiEvent> = match res.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::warn!(sport = ?sport, error = %e, "malformed odds response — skipping sport");
+                continue;
+            }
+        };
         for ev in events {
             games.push(normalize(*sport, ev));
         }

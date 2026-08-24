@@ -153,3 +153,140 @@ fn fmt_line(n: f64) -> String {
         format!("{n}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oddsports_shared::{BookLine, Sport};
+
+    fn game_with_lines(id: &str, lines: Vec<f64>) -> Game {
+        Game {
+            id: id.into(),
+            sport: Sport::Nfl,
+            home: "Chiefs".into(),
+            away: "Raiders".into(),
+            starts_at: "2026-09-10T20:15:00Z".into(),
+            spread_lines: lines
+                .into_iter()
+                .enumerate()
+                .map(|(i, l)| BookLine {
+                    book: format!("book{i}"),
+                    american_odds: -110,
+                    line: Some(l),
+                    fetched_at: "2026-09-10T18:00:00Z".into(),
+                })
+                .collect(),
+            moneyline_lines: vec![],
+            total_lines: vec![],
+        }
+    }
+
+    fn history(points: &[f64]) -> HashMap<String, Vec<LinePoint>> {
+        let mut m = HashMap::new();
+        m.insert(
+            "g1".to_string(),
+            points
+                .iter()
+                .enumerate()
+                .map(|(i, line)| LinePoint { at: format!("t{i}"), line: *line })
+                .collect(),
+        );
+        m
+    }
+
+    #[test]
+    fn needs_consensus_of_three_books() {
+        assert!(run_model(&[game_with_lines("g1", vec![-4.0, -4.5])], &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn deviation_below_half_a_point_is_not_an_edge() {
+        // fair = -4.2, best deviation 0.2 < MIN_EDGE → no pick.
+        let out = run_model(&[game_with_lines("g1", vec![-4.0, -4.2, -4.4])], &HashMap::new());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn book_shading_toward_away_is_an_away_pick() {
+        // fair = -5.0; -10 deviates most (away side gets +10 vs fair +5).
+        let out = run_model(&[game_with_lines("g1", vec![-10.0, -4.0, -5.0])], &HashMap::new());
+        assert_eq!(out.len(), 1);
+        let mo = &out[0];
+        assert_eq!(mo.pick_team, PickTeam::Away);
+        assert_eq!(mo.side, "Raiders +10");
+        assert_eq!(mo.picked_line, -10.0);
+        assert_eq!(mo.fair_line, -5.0);
+        assert_eq!(mo.edge_pct, 5.0);
+        assert_eq!(mo.confidence, 4); // edge >= 2.0
+        assert_eq!(mo.suggested_units, 2.5); // round(5 * 0.25 * 2 * 10)/10
+    }
+
+    #[test]
+    fn book_shading_toward_home_is_a_home_pick() {
+        // fair = -4.0; -2 is the outlier — home bettors lay only 2.
+        let out = run_model(&[game_with_lines("g1", vec![-2.0, -4.0, -5.0])], &HashMap::new());
+        assert_eq!(out.len(), 1);
+        let mo = &out[0];
+        assert_eq!(mo.pick_team, PickTeam::Home);
+        assert_eq!(mo.side, "Chiefs -2");
+        assert_eq!(mo.edge_pct, 2.0);
+        assert_eq!(mo.suggested_units, 1.0);
+    }
+
+    #[test]
+    fn units_are_capped_at_max_units() {
+        // edge 7 → raw sizing 3.5u → capped to 3.0u.
+        let out = run_model(&[game_with_lines("g1", vec![-12.0, -4.0, -5.0])], &HashMap::new());
+        assert_eq!(out[0].edge_pct, 7.0);
+        assert_eq!(out[0].suggested_units, MAX_UNITS);
+    }
+
+    #[test]
+    fn steam_toward_home_confirms_a_home_pick() {
+        // Median moved -5.0 → -6.5 (money on home) and we picked home.
+        let g = game_with_lines("g1", vec![-2.0, -5.0, -6.0]); // fair -5, home pick, base conf 4
+        let out = run_model(&[g], &history(&[-5.0, -6.5]));
+        assert_eq!(out[0].confidence, 5);
+        assert!(out[0].factors.iter().any(|f| f.name == "line steam" && f.direction == FactorDirection::For));
+    }
+
+    #[test]
+    fn steam_against_the_pick_downgrades_confidence() {
+        // Same home-side steam, but the outlier puts us on the away side.
+        let g = game_with_lines("g1", vec![-8.0, -5.0, -4.0]); // fair -5, away pick, base conf 4
+        let out = run_model(&[g], &history(&[-5.0, -6.5]));
+        assert_eq!(out[0].confidence, 3);
+        assert!(out[0].factors.iter().any(|f| f.name == "line steam" && f.direction == FactorDirection::Against));
+    }
+
+    #[test]
+    fn sub_threshold_movement_is_not_steam() {
+        let g = game_with_lines("g1", vec![-2.0, -5.0, -6.0]);
+        let out = run_model(&[g], &history(&[-5.0, -5.5])); // |movement| < STEAM_THRESHOLD
+        assert_eq!(out[0].confidence, 4);
+        assert!(!out[0].factors.iter().any(|f| f.name == "line steam"));
+    }
+
+    #[test]
+    fn outputs_are_sorted_best_edge_first() {
+        let strong = game_with_lines("strong", vec![-12.0, -4.0, -5.0]); // edge 7
+        let weak = game_with_lines("weak", vec![-3.0, -4.0, -5.0]); // edge 1
+        let out = run_model(&[weak, strong], &HashMap::new());
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].edge_pct, out[1].edge_pct), (7.0, 1.0));
+    }
+
+    #[test]
+    fn empty_history_snapshots_the_fetched_line() {
+        let out = run_model(&[game_with_lines("g1", vec![-2.0, -4.0, -5.0])], &HashMap::new());
+        assert_eq!(out[0].line_history.len(), 1);
+        assert_eq!(out[0].line_history[0].line, -2.0);
+    }
+
+    #[test]
+    fn bankroll_scaling_rounds_to_cents() {
+        // 1 unit = 1% of bankroll: 2 units at $1,000 → $20.00.
+        assert_eq!(scale_units_to_bankroll(2.0, 1000.0), 20.0);
+        assert_eq!(scale_units_to_bankroll(1.5, 333.33), 5.0); // 499.995 → rounds to cents
+    }
+}

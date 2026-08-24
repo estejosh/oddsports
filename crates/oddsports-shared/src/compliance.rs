@@ -47,8 +47,8 @@ pub fn lint_content(body: &str) -> Vec<LintViolation> {
     let mut violations = Vec::new();
     for re in banned_phrases() {
         if let Some(m) = re.find(body) {
-            let start = m.start().saturating_sub(30);
-            let end = (m.end() + 30).min(body.len());
+            let start = floor_char_boundary(body, m.start().saturating_sub(30));
+            let end = ceil_char_boundary(body, (m.end() + 30).min(body.len()));
             violations.push(LintViolation {
                 phrase: m.as_str().trim().to_string(),
                 excerpt: body[start..end].to_string(),
@@ -56,6 +56,23 @@ pub fn lint_content(body: &str) -> Vec<LintViolation> {
         }
     }
     violations
+}
+
+/// Byte offsets from a regex match are not guaranteed to land on char
+/// boundaries once we shift them ±30 bytes — and prose with emoji/Cyrillic is
+/// normal here. Slicing at a non-boundary panics, so walk to the nearest one.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 /// Template lock: content cannot ship without required blocks. Errors abort the send.
@@ -108,5 +125,22 @@ mod tests {
     fn passes_clean_content() {
         let body = format!("Chiefs -3.5 looks strong per the model.{}", compliance_footer());
         assert!(assert_compliant(&body).is_ok());
+    }
+
+    #[test]
+    fn excerpt_handles_multibyte_without_panicking() {
+        // 30-byte excerpt window around the match crosses multi-byte chars —
+        // byte slicing here used to panic (S-01).
+        let body = "🚀🔥💰🏀 this is an absolute 🔒 guaranteed 💵🏆🎉 winner tonight folks 🎊🥳";
+        let violations = lint_content(body);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].phrase, "guaranteed");
+    }
+
+    #[test]
+    fn excerpt_at_start_and_end_of_ascii_body() {
+        let violations = lint_content("guaranteed");
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].excerpt, "guaranteed");
     }
 }

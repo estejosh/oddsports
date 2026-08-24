@@ -310,3 +310,87 @@ pub fn build_reveal_post(db: &Connection, date: &str) -> Result<String> {
 
     Ok(out.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oddsports_shared::{MarketType, ModelOutput, Sport, Tier};
+
+    fn pick(pick_team: PickTeam, picked_line: f64) -> PickBlock {
+        PickBlock {
+            game_id: "g1".into(),
+            sport: Sport::Nfl,
+            matchup: "Raiders @ Chiefs".into(),
+            min_tier: Tier::Free,
+            body: String::new(),
+            confidence: 3,
+            risk_warning: String::new(),
+            model: ModelOutput {
+                game_id: "g1".into(),
+                market: MarketType::Spread,
+                side: "Chiefs -3.5".into(),
+                pick_team,
+                picked_line,
+                fair_line: picked_line - 1.0,
+                edge_pct: 1.0,
+                confidence: 3,
+                suggested_units: 0.5,
+                factors: vec![],
+                line_history: vec![],
+            },
+            links: vec![],
+        }
+    }
+
+    fn score(home: i32, away: i32) -> FinalScore {
+        FinalScore { game_id: "g1".into(), home_score: home, away_score: away, closing_spread: None }
+    }
+
+    #[test]
+    fn home_favorite_covers_when_margin_exceeds_line() {
+        // 27-20 = +7 margin, laying -3.5 → covered by 3.5.
+        assert_eq!(settle_spread(&pick(PickTeam::Home, -3.5), &score(27, 20)), GradeResult::Win);
+    }
+
+    #[test]
+    fn home_favorite_pushes_on_exact_landings() {
+        // Whole-number lines can push; half-point lines never do.
+        assert_eq!(settle_spread(&pick(PickTeam::Home, -3.0), &score(23, 20)), GradeResult::Push);
+        assert_eq!(settle_spread(&pick(PickTeam::Home, -3.5), &score(24, 20)), GradeResult::Win);
+    }
+
+    #[test]
+    fn home_favorite_loses_when_margin_short() {
+        assert_eq!(settle_spread(&pick(PickTeam::Home, -3.5), &score(22, 20)), GradeResult::Loss);
+    }
+
+    #[test]
+    fn away_dog_covers() {
+        // Home by 2 vs +4 → away covers by 2.
+        assert_eq!(settle_spread(&pick(PickTeam::Away, 4.0), &score(20, 18)), GradeResult::Win);
+    }
+
+    #[test]
+    fn away_favorite_settles_from_home_perspective_line() {
+        // picked_line is home-perspective (-6.5 for an away fav); away by 10 covers.
+        assert_eq!(settle_spread(&pick(PickTeam::Away, -6.5), &score(10, 20)), GradeResult::Win);
+        // Away by exactly 6 pushes on the whole-number line; by 5 loses.
+        assert_eq!(settle_spread(&pick(PickTeam::Away, -6.0), &score(10, 16)), GradeResult::Push);
+        assert_eq!(settle_spread(&pick(PickTeam::Away, -6.5), &score(10, 16)), GradeResult::Loss);
+    }
+
+    #[test]
+    fn deepest_block_wins_per_game() {
+        let free = pick(PickTeam::Home, -3.5);
+        let mut analyst = pick(PickTeam::Home, -3.5);
+        analyst.min_tier = Tier::Analyst;
+        let slate = DailySlate {
+            date: "2026-08-21".into(),
+            picks: vec![free.clone(), analyst.clone()],
+            generation: Default::default(),
+        };
+        let deep = deepest_blocks(&slate);
+        assert_eq!(deep.len(), 1);
+        assert_eq!(deep[0].min_tier, Tier::Analyst);
+    }
+}

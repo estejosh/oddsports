@@ -46,7 +46,10 @@ pub fn create_link_token(db: &Connection, email: &str) -> Result<String> {
         params![token, email, expires],
     )?;
     // TODO(fable): actually send the token via Beehiiv transactional email or SES.
-    tracing::info!(email, token, "link token created (send via email in prod!)");
+    // Until then the token is only readable at debug/trace — it is a credential
+    // and must never land in default info-level logs.
+    tracing::debug!(email, "link token created (email delivery not wired yet)");
+    tracing::trace!(token, "link token value — debug access only");
     Ok(token)
 }
 
