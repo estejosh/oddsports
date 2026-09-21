@@ -4,7 +4,7 @@ Tiered sports betting analysis — Beehiiv newsletter + Telegram bot, cross-prom
 
 **Read [PRD.md](./PRD.md) first.** [docs/FABLE_HANDOFF.md](./docs/FABLE_HANDOFF.md) is the build order.
 
-**License:** [Usufruct License (UFL) v2.0](./LICENSE.md), Operational Scope: **Noncommercial** (tag `UFL-N-1a`) — source-available: read it, run it, fork it, learn from it. **Commercial use is not permitted** without a separate license. Cite as `LicenseRef-UFL-2.0-N`; canonical text at [estejosh/UFL-Usufruct-License](https://github.com/estejosh/UFL-Usufruct-License).
+**License:** [Usufruct License (UFL) v2.1](./LICENSE.md), Operational Scope: **Noncommercial** (tag `UFL-N-1a`) — source-available: read it, run it, fork it, learn from it. **Commercial use is not permitted** without a separate license. Cite as `LicenseRef-UFL-2.1-N`; canonical text at [estejosh/UFL-Usufruct-License](https://github.com/estejosh/UFL-Usufruct-License).
 
 Rust workspace — same stack and operational model as our other services (single binary, systemd, SQLite).
 
