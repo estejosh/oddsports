@@ -1,6 +1,6 @@
 # Audience Acquisition Checklist (opt-in only)
 
-No purchased/scraped lists — CAN-SPAM/GDPR exposure, deliverability damage, and risk to Betchu's license. Everything below builds an opt-in funnel.
+No purchased/scraped lists — CAN-SPAM/GDPR exposure and deliverability damage. Everything below builds an opt-in funnel. Maintain operator neutrality in all outreach: never pitch "our sportsbook" or suggest users join a specific book.
 
 ## Week 1–2: foundations
 - [ ] Beehiiv signup page live with lead magnet ("Bankroll Management 101" PDF or public pick tracker)
@@ -16,7 +16,6 @@ No purchased/scraped lists — CAN-SPAM/GDPR exposure, deliverability damage, an
 ## Week 6+: paid & partnerships
 - [ ] Beehiiv Boosts (paid cross-newsletter acquisition) — start small, track CAC vs LTV
 - [ ] X/Reddit ads test budget timed to NFL kickoff (September = biggest acquisition window)
-- [ ] **Betchu existing customers** — highest-quality seed list; BLOCKED on legal confirming Betchu's privacy policy/opt-in terms permit cross-promotion emails
 
 ## Metrics to watch
 - Signup conversion by channel (UTM everything)

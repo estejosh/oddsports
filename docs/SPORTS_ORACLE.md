@@ -1,9 +1,9 @@
 # Sports Data Oracle — de-externalizing the data path
 
 Decision (2026-07-10): OddSports moves off third-party sports-data APIs in
-phases, ending with a decentralized oracle on HoneMesh. No Betchu feed in the
-data path — OddSports stays independent of any single company, and the oracle
-stays hard to shut down.
+phases, ending with a decentralized oracle on HoneMesh. Independent data sources only —
+OddSports stays agnostic to any single company's interests, and the oracle
+stays hard to shut down or influence.
 
 ## Why
 
@@ -46,12 +46,10 @@ public surface beyond `Sport`.
 
 - Query endpoint `/v1/sports/{feed}` billed per query in hunits,
   demand-driven reward pool (same economics as Verasens queries).
-- Odds/lines join scores as feed kinds. Sources: exchanges and books with
-  public APIs (e.g. Betfair exchange). NOT built on scraping books' sites —
-  bot-detection arms races make that sand, not foundation.
+- Odds/lines join scores as feed kinds. Sources: public exchanges and APIs (e.g. Betfair exchange).
+  NOT built on scraping books' sites — bot-detection arms races make that sand, not foundation.
 - OddSports consumes the oracle via `HONE_API_BASE` (`/v1/sports/...`),
-  becoming the feed's first paying customer; the-odds-api dependency drops
-  to zero.
+  becoming the feed's first paying customer; third-party API dependency drops.
 
 ## OddSports integration status
 
