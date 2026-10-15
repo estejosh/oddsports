@@ -1,0 +1,20 @@
+[
+  {
+    "id": "example_a",
+    "name": "Example Book A",
+    "url": "https://example.com/a?sub={sub}",
+    "commission": true
+  },
+  {
+    "id": "example_b",
+    "name": "Example Book B",
+    "url": "https://example.com/b?sub={sub}",
+    "commission": true
+  },
+  {
+    "id": "example_c",
+    "name": "Example Book C",
+    "url": "https://example.com/c",
+    "commission": false
+  }
+]

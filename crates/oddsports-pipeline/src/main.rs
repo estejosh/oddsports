@@ -18,6 +18,28 @@ async fn main() -> Result<()> {
             let dates = oddsports_pipeline::run_grading(&db, &today).await?;
             println!("graded catch-up over {} slate date(s)", dates.len());
         }
+        // `oddsports-pipeline scrub-promo [--dry-run]` - remove legacy sportsbook
+        // promo text from stored slates and reveal bodies. Backs up first.
+        Some("scrub-promo") => {
+            let dry = std::env::args().any(|a| a == "--dry-run");
+            let mut db = oddsports_pipeline::store::open_db()?;
+            if !dry {
+                let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+                let path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "./data/oddsports.sqlite".into());
+                let backup = format!("{path}.pre-scrub-{stamp}");
+                oddsports_pipeline::maintenance::backup_to(&db, &backup)?;
+                println!("backup written: {backup}");
+            }
+            let r = oddsports_pipeline::maintenance::scrub_stored_promo(&mut db, dry)?;
+            println!(
+                "{}: {} slate(s) / {} pick body(ies) / {} graded reveal(s) {}",
+                if dry { "dry run" } else { "scrubbed" },
+                r.slates_changed,
+                r.bodies_changed,
+                r.graded_changed,
+                if dry { "would change" } else { "changed" }
+            );
+        }
         // Default: full daily generation pass.
         _ => {
             let slate = oddsports_pipeline::run_daily_pipeline(oddsports_pipeline::today()).await?;

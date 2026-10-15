@@ -3,23 +3,22 @@
 //! The LLM receives structured factors from the deterministic model and
 //! turns them into readable prose — it never invents numbers or picks.
 //!
-//! HONE inference gateway (OpenAI-compatible /v1/chat/completions) via
-//! plain reqwest — no SDK needed. HoneMesh, formerly BTCPC — legacy
-//! BTCPC_* env vars still work. Point HONE_API_BASE at a local node
-//! (default) or the hosted gateway; fees bill in hunits to the account
-//! behind HONE_API_KEY, not USD.
+//! Provider-agnostic: any OpenAI-compatible chat-completions endpoint, set
+//! purely through environment variables (see `ai_config`). If no endpoint is
+//! configured the deterministic template is used, so the pipeline always runs.
 
+use crate::ai_config::{AiConfig, ChatResponse};
 use crate::budget::TokenBudget;
 use anyhow::{bail, Result};
 use oddsports_shared::{lint_content, Game, ModelOutput, Tier};
-use serde::Deserialize;
 use serde_json::json;
-use std::env;
 
-const SYSTEM_PROMPT: &str = "You are the analysis writer for OddSports, a sports betting newsletter.\n\
+const SYSTEM_PROMPT: &str = "You are the analysis writer for OddSports, an independent sports odds-analysis publication.\n\
 You will receive structured model output (pick, edge, confidence, factors). Write prose that\n\
 explains it at the requested depth. Rules:\n\
 - NEVER invent statistics, numbers, or factors not present in the input.\n\
+- NEVER name or mention any sportsbook, bookmaker, operator or affiliate, and never quote any individual book's odds. Refer only to \"the market\" or \"consensus\".\n\
+- NEVER include links, calls to action, promotions, or suggestions to sign up or deposit anywhere.\n\
 - NEVER use language implying certainty: no \"lock\", \"guaranteed\", \"can't lose\", \"sure thing\", \"free money\", \"risk-free\".\n\
 - The banned words above may not appear AT ALL, even negated (\"nothing is guaranteed\" is still a violation — write \"no outcome is certain\" instead).\n\
 - Always frame as analysis/opinion, acknowledge variance and risk.\n\
@@ -32,36 +31,10 @@ pub struct ProseResult {
     pub output_tokens: u64,
 }
 
-#[derive(Deserialize)]
-struct ApiResponse {
-    choices: Vec<Choice>,
-    usage: Usage,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: ChoiceMessage,
-}
-
-#[derive(Deserialize)]
-struct ChoiceMessage {
-    #[serde(default)]
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct Usage {
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    /// HONE-specific: inference fee debited from the account, in hunits
-    /// (pre-rebrand nodes still say dreams).
-    #[serde(default, alias = "fee_dreams")]
-    fee_hunits: u64,
-}
-
-/// Deterministic, always-compliant fallback — used on budget exhaustion
-/// and when the LLM cannot produce lint-clean prose.
-fn template_fallback(model_out: &ModelOutput) -> ProseResult {
+/// Deterministic, always-compliant fallback — used on budget exhaustion,
+/// when no AI endpoint is configured, and when the LLM cannot produce
+/// lint-clean prose.
+pub fn template_fallback(model_out: &ModelOutput) -> ProseResult {
     ProseResult {
         text: format!(
             "{} — edge {} pts vs market consensus. Confidence {}/5.",
@@ -84,21 +57,19 @@ pub async fn write_pick_prose(
         return Ok(template_fallback(model_out));
     }
 
+    let cfg = AiConfig::from_env();
+    let (Some(url), Some(llm_model)) = (cfg.chat_url(), cfg.model_for(tier >= Tier::Analyst).map(str::to_string))
+    else {
+        tracing::warn!("AI_API_BASE / AI_MODEL_* not configured — using template prose");
+        return Ok(template_fallback(model_out));
+    };
+
     let (depth, max_tokens) = match tier {
         Tier::Analyst | Tier::Sharp => ("deep", 800),
         Tier::Starter => ("standard", 300),
         Tier::Free => ("brief", 100),
     };
-    let llm_model = if tier >= Tier::Analyst {
-        env::var("MODEL_STRONG").unwrap_or_else(|_| "gemma4:26b".into())
-    } else {
-        env::var("MODEL_CHEAP").unwrap_or_else(|_| "gemma4:latest".into())
-    };
 
-    let api_base = env::var("HONE_API_BASE")
-        .or_else(|_| env::var("BTCPC_API_BASE"))
-        .unwrap_or_else(|_| "http://localhost:4242".into());
-    let api_key = env::var("HONE_API_KEY").or_else(|_| env::var("BTCPC_API_KEY"))?;
     let user_content = format!(
         "Depth: {depth}\nGame: {} @ {} ({:?}, starts {})\nModel output:\n{}",
         game.away, game.home, game.sport, game.starts_at,
@@ -119,42 +90,38 @@ pub async fn write_pick_prose(
             ]
         });
 
-        // Cold model loads surface as transient 5xx from the gateway, and a
+        // Cold model loads surface as transient 5xx from a gateway, and a
         // busy CPU node can time out entirely — retry with backoff, then fall
         // back to the template rather than failing the whole daily run.
-        let mut parsed: Option<ApiResponse> = None;
+        let mut parsed: Option<ChatResponse> = None;
         for attempt in 0..3u32 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(10 * attempt as u64)).await;
             }
-            let res = match client
-                .post(format!("{api_base}/v1/chat/completions"))
-                .header("Authorization", format!("Bearer {api_key}"))
-                .json(&body)
-                .send()
-                .await
-            {
+            let mut req = client.post(&url).json(&body);
+            if let Some(k) = &cfg.key {
+                req = req.header("Authorization", format!("Bearer {k}"));
+            }
+            let res = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(error = %e, attempt, "HONE request failed — retrying");
+                    tracing::warn!(error = %e, attempt, "inference request failed — retrying");
                     continue;
                 }
             };
             let status = res.status();
             if status.is_server_error() {
-                tracing::warn!(%status, attempt, "HONE inference 5xx — retrying");
+                tracing::warn!(%status, attempt, "inference 5xx — retrying");
                 continue;
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                // Per-IP rate limit is shared with everything else on this box
-                // (node sync, other bots) — wait out the window and retry.
-                tracing::warn!(attempt, "HONE rate limited — waiting 65s");
+                tracing::warn!(attempt, "inference rate limited — waiting 65s");
                 tokio::time::sleep(std::time::Duration::from_secs(65)).await;
                 continue;
             }
             if !status.is_success() {
                 // Other 4xx = config problem (bad key, unknown model) — surface it loudly.
-                bail!("HONE inference {}: {}", status, res.text().await.unwrap_or_default());
+                bail!("inference endpoint {}: {}", status, res.text().await.unwrap_or_default());
             }
             parsed = Some(res.json().await?);
             break;
@@ -164,7 +131,6 @@ pub async fn write_pick_prose(
             return Ok(template_fallback(model_out));
         };
         budget.record(&llm_model, parsed.usage.prompt_tokens, parsed.usage.completion_tokens)?;
-        tracing::debug!(model = %llm_model, fee_hunits = parsed.usage.fee_hunits, "inference fee");
         totals.0 += parsed.usage.prompt_tokens;
         totals.1 += parsed.usage.completion_tokens;
 
@@ -174,8 +140,8 @@ pub async fn write_pick_prose(
             .map(|c| c.message.content.trim().to_string())
             .unwrap_or_default();
         if text.is_empty() {
-            // The gateway can return 200 with empty content (e.g. model warm-up,
-            // or a model name no worker serves).
+            // Some gateways return 200 with empty content (model warm-up,
+            // or a model name nothing serves).
             tracing::warn!(model = %llm_model, lint_attempt, "empty completion — retrying");
             continue;
         }
@@ -196,5 +162,38 @@ pub async fn write_pick_prose(
 
     // Compliance is a hard gate; readability is not. Publish the template.
     tracing::warn!(game = %game.id, tier = ?tier, "prose fell back to template after lint retries");
-    Ok(template_fallback(model_out))
+    Ok(ProseResult { input_tokens: totals.0, output_tokens: totals.1, ..template_fallback(model_out) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oddsports_shared::{MarketType, PickTeam};
+
+    #[test]
+    fn system_prompt_forbids_operator_mentions_and_ctas() {
+        let p = SYSTEM_PROMPT.to_lowercase();
+        assert!(p.contains("never name or mention any sportsbook"));
+        assert!(p.contains("calls to action"));
+    }
+
+    #[test]
+    fn template_fallback_is_lint_clean_and_names_no_book() {
+        let mo = ModelOutput {
+            game_id: "g".into(),
+            market: MarketType::Spread,
+            side: "Celtics -4.5".into(),
+            pick_team: PickTeam::Home,
+            picked_line: -4.5,
+            fair_line: -6.0,
+            edge_pct: 1.5,
+            confidence: 3,
+            suggested_units: 1.0,
+            factors: vec![],
+            line_history: vec![],
+        };
+        let t = template_fallback(&mo);
+        assert!(lint_content(&t.text).is_empty());
+        assert_eq!(t.input_tokens + t.output_tokens, 0);
+    }
 }

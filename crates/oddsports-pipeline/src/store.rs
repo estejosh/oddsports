@@ -84,7 +84,15 @@ pub fn load_slate(db: &Connection, date: &str) -> Result<Option<DailySlate>> {
         .query_row("SELECT json FROM slates WHERE date = ?1", params![date], |r| r.get(0))
         .optional()?;
     Ok(match json {
-        Some(j) => Some(serde_json::from_str(&j)?),
+        Some(j) => {
+            let mut slate: DailySlate = serde_json::from_str(&j)?;
+            // Slates stored before the vendor-neutral change carry promo rows;
+            // scrub on read, never rewrite the immutable stored record.
+            for p in &mut slate.picks {
+                p.body = oddsports_shared::scrub_legacy_promo(&p.body);
+            }
+            Some(slate)
+        }
         None => None,
     })
 }

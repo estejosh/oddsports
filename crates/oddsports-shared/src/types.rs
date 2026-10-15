@@ -59,6 +59,10 @@ pub struct BookLine {
     pub book: String,
     pub american_odds: i32,
     pub line: Option<f64>,
+    /// Which side this price is for (team name, "Over", ...). Needed to remove
+    /// the vig from two-way markets. Absent on rows stored before this field existed.
+    #[serde(default)]
+    pub outcome: Option<String>,
     pub fetched_at: String, // ISO
 }
 
@@ -80,6 +84,25 @@ pub struct Factor {
     pub direction: FactorDirection,
     pub weight: f64,
     pub detail: String,
+    /// Where the claim comes from: an http(s) URL, or `internal:<name>` for
+    /// factors computed by our own code. A factor with no source is dropped.
+    #[serde(default)]
+    pub source: String,
+    /// RFC 3339 timestamp the source data was current as of.
+    #[serde(default)]
+    pub as_of: String,
+}
+
+impl Factor {
+    /// A factor is publishable only if it names a source (http(s) URL, or
+    /// `internal:<name>` for our own computed signals) and a timestamp.
+    pub fn is_sourced(&self) -> bool {
+        let s = self.source.trim();
+        let ok_source = s.starts_with("https://")
+            || s.starts_with("http://")
+            || (s.starts_with("internal:") && s.len() > "internal:".len());
+        ok_source && !self.as_of.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -135,14 +158,6 @@ pub struct PickBlock {
     pub risk_warning: String,
     /// Structured copy of the model output for grading/raw display.
     pub model: ModelOutput,
-    /// Tracked links: betchu first by convention, then affiliates.
-    pub links: Vec<BookRef>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookRef {
-    pub book: String,
-    pub url: String,
 }
 
 /// One day's fully generated content — the unit the pipeline produces once.
