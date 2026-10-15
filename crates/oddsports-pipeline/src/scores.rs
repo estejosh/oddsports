@@ -15,7 +15,7 @@ pub type PublicScores = HashMap<(String, String), Vec<(i32, i32)>>;
 
 /// ESPN public scoreboard path per sport. Fight sports return None —
 /// there's no spread settlement for them in v0 anyway.
-fn espn_path(sport: Sport) -> Option<&'static str> {
+pub(crate) fn espn_path(sport: Sport) -> Option<&'static str> {
     match sport {
         Sport::Nfl => Some("football/nfl"),
         Sport::Nba => Some("basketball/nba"),

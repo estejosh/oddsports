@@ -20,7 +20,10 @@ pub mod ai_config;
 pub mod ai_factors;
 pub mod budget;
 pub mod calibration;
+pub mod factor_docs;
+pub mod forecasts;
 pub mod grading;
+pub mod maintenance;
 pub mod model;
 pub mod odds_score;
 pub mod prose;
@@ -38,10 +41,9 @@ use std::collections::HashMap;
 const FREE_PICK_COUNT: usize = 5;
 
 fn env_flag(name: &str) -> bool {
-    matches!(
-        std::env::var(name).ok().as_deref().map(str::trim),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes")
-    )
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 /// Daily pipeline orchestrator. PRD Section 6 #1: ONE generation pass per day.
@@ -90,6 +92,16 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
         .filter_map(|g| odds_score::score_game(g).map(|s| (g.id.clone(), s)))
         .collect();
     tracing::info!(scored = odds_scores.len(), "fair odds computed");
+    // Forecast ledger: the home-win probability we publish, per game. Starts
+    // at the market-derived score; games that get sourced factors are
+    // upgraded to the real odds score in the loop below.
+    let mut final_probs: HashMap<String, f64> =
+        odds_scores.iter().map(|(id, s)| (id.clone(), s.home_prob)).collect();
+
+    // Refresh sourced documents for AI factors (no-op unless enabled + configured).
+    if ai_factors_on {
+        factor_docs::refresh(&client, &games).await;
+    }
 
     let model_outputs = model::run_model(&games, &history); // sorted best-edge first
     // Prose is the cost + latency driver (calls = picks × tier depths), so the
@@ -128,6 +140,9 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
         let fair = odds_scores
             .get(&game.id)
             .map(|s| real_odds_score::apply(s, &ai_factors));
+        if let Some(f) = &fair {
+            final_probs.insert(game.id.clone(), f.home_prob);
+        }
 
         // The LLM sees model factors plus the sourced AI factors (home-relative).
         let mut mo_for_prose = mo.clone();
@@ -188,6 +203,12 @@ pub async fn run_daily_pipeline(date: NaiveDate) -> Result<DailySlate> {
         }
     }
 
+    for g in &games {
+        if let Some(p) = final_probs.get(&g.id) {
+            forecasts::record(&db, &date_str, g, *p)?;
+        }
+    }
+
     stats.cost_usd = budget.spent();
     let slate = DailySlate { date: date_str.clone(), picks, generation: stats };
     store::save_slate(&db, &slate)?;
@@ -214,6 +235,7 @@ pub async fn run_grading(db: &rusqlite::Connection, before: &str) -> Result<Vec<
     let past_dates = store::slate_dates_before(db, before)?;
     for d in &past_dates {
         grading::grade_slate(db, d).await?;
+        forecasts::settle(db, d).await?;
     }
     Ok(past_dates)
 }

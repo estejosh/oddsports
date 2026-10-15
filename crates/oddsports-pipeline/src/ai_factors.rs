@@ -16,10 +16,10 @@ use crate::ai_config::{chat_once, AiConfig};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use oddsports_shared::{lint_content, Factor, FactorDirection, Game};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceDoc {
     pub url: String,
     /// RFC 3339: when this document was current.

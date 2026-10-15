@@ -79,3 +79,9 @@ Scaffold — interfaces and control flow are real; these need filling in:
 - `/why`, `/line`, `/raw` game matching in the bot
 - Channel auto-kick job on tier lapse; webhook mode for prod
 - A document source for `ai_factors` (the repo ships none; a deployment supplies its own and records its terms in docs/DATA_SOURCES.md)
+
+## Track record and maintenance
+
+- Every game we price gets a pre-game home-win forecast stored in the `forecasts` table (first forecast wins; never revised). After games settle, the reveal post shows Brier score and log loss over all priced games once there are 20 settled (a coin flip scores 0.250 / 0.693).
+- With `AI_FACTORS_ENABLED=true` and `FACTOR_CONTEXT_DIR` set, each run refreshes one source document per team from ESPN's public injury report. The AI may only cite those documents.
+- `oddsports-pipeline scrub-promo [--dry-run]` removes legacy sportsbook promo text from stored slates and reveal bodies. It writes a database backup first and never touches results, units, closing lines or CLV.
