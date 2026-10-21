@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "oddsports-bot",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "--release", "-p", "oddsports-bot"]
+    },
+    {
+      "name": "oddsports-pipeline (one-shot daily job)",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "--release", "-p", "oddsports-pipeline"]
+    }
+  ]
+}
