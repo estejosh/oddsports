@@ -268,7 +268,7 @@ mod tests {
         let body = render_pick(&t, &g, &mo(), Tier::Analyst, "ok", Some(&fair(&g))).unwrap();
         assert!(body.contains("Sportsbooks: [FanDuel]"));
         assert!(body.find("FanDuel").unwrap() < body.find("Zeta Book").unwrap());
-        assert!(body.contains("may earn OddSports a commission"));
+        assert!(body.contains("may earn a commission if you sign up"));
         assert!(!body.to_lowercase().contains("affiliated"));
         assert!(body.contains("sub=email_Analyst_g1"));
         // vendor block is not odds: no raw prices leak next to it

@@ -109,7 +109,10 @@ impl Vendors {
         }
         let mut lines = Vec::new();
         if self.list.iter().any(|v| v.commission) {
-            lines.push("Some links may earn OddSports a commission.");
+            lines.push(
+                "OddSports may earn a commission if you sign up with a sportsbook through links on this page. \
+                 Commissions never affect our forecasts.",
+            );
         }
         lines.push("Vendors are listed alphabetically for reference only; no endorsement.");
         Some(lines.join(" "))
@@ -123,7 +126,8 @@ impl Vendors {
             .iter()
             .map(|v| format!("[{}]({})", v.name.trim(), Self::tracked_url(v, surface, tier, game_id)))
             .collect();
-        format!("\n\nSportsbooks: {}\n{}", links.join(" · "), disclosure)
+        // Disclosure goes ABOVE the links so it is read before the click.
+        format!("\n\n{}\nSportsbooks: {}", disclosure, links.join(" · "))
     }
 }
 
@@ -158,9 +162,16 @@ mod tests {
     #[test]
     fn commission_notice_comes_from_the_flag() {
         let b = Vendors::from_json(THREE).unwrap().block("email", "Free", "g1");
-        assert!(b.contains("may earn OddSports a commission"));
+        assert!(b.contains("may earn a commission if you sign up"));
+        assert!(b.contains("never affect our forecasts"));
         assert!(!b.to_lowercase().contains("affiliated"));
         assert!(b.contains("no endorsement"));
+    }
+
+    #[test]
+    fn disclosure_is_read_before_the_links() {
+        let b = Vendors::from_json(THREE).unwrap().block("email", "Free", "g1");
+        assert!(b.find("may earn a commission").unwrap() < b.find("Sportsbooks:").unwrap());
     }
 
     #[test]
