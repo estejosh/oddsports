@@ -10,7 +10,7 @@ use chrono::{Duration, Utc};
 use oddsports_pipeline::grading::{build_reveal_post, rolling_record};
 use oddsports_pipeline::model::scale_units_to_bankroll;
 use oddsports_pipeline::store::{get_subscriber_by_telegram, load_slate, open_db, set_bankroll};
-use oddsports_shared::{DailySlate, PickBlock, Tier, RG_DISCLOSURE, RELATED_PARTY_DISCLOSURE};
+use oddsports_shared::{DailySlate, PickBlock, Templates, Tier, ANALYSIS_DISCLAIMER, NEUTRALITY_DISCLAIMER, RG_DISCLOSURE};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use teloxide::{prelude::*, utils::command::BotCommands};
@@ -89,12 +89,8 @@ async fn handle(bot: &Bot, msg: &Message, cmd: Command, db: Db) -> Result<()> {
     match cmd {
         Command::Start => {
             let text = format!(
-                "🏟 *OddSports* — tiered sports betting analysis.\n\n\
-                 Free: top daily picks. Paid tiers unlock the full slate, model breakdowns, \
-                 line movement, unit sizing, and live alerts.\n\n\
-                 Commands: /today /record /link /help /rg\n\n\
-                 Subscribe: (Beehiiv signup link here)\n\n\
-                 {RELATED_PARTY_DISCLOSURE}\n{RG_DISCLOSURE}"
+                "{}\n\n{NEUTRALITY_DISCLAIMER}\n{ANALYSIS_DISCLAIMER}\n{RG_DISCLOSURE}",
+                Templates::from_env().bot_start()
             );
             bot.send_message(msg.chat.id, text).await?;
         }

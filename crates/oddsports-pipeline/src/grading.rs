@@ -181,7 +181,7 @@ pub async fn grade_slate(db: &Connection, date: &str) -> Result<usize> {
                 pick.confidence,
                 result.as_str(),
                 (units_delta * 100.0).round() / 100.0,
-                score.closing_spread,
+                closing,
                 clv,
                 pick.body,
                 serde_json::to_string(&pick.sport)?,
@@ -302,6 +302,11 @@ pub fn build_reveal_post(db: &Connection, date: &str) -> Result<String> {
         rec.units_net,
         rec.avg_clv.map(|c| format!(", avg CLV {c}")).unwrap_or_default(),
     ));
+    let calibration = crate::forecasts::calibration_line(db)?;
+    if !calibration.is_empty() {
+        out.push(String::new());
+        out.push(calibration);
+    }
     out.push(String::new());
     out.push("Yesterday's full paid-tier analysis, revealed:".into());
     for (_, _, _, _, body) in &rows {

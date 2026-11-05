@@ -20,19 +20,26 @@ Stack: Rust workspace (`crates/`) — teloxide bot, pipeline binary, rusqlite, r
 4. Daily `dailyTierSync` cron + auto-kick from paid channels on lapse.
 5. Switch long-poll → webhook; deploy (Railway/Fly/VPS).
 
-## Phase 3 — monetization breadth
-1. Apply to affiliate programs; add real templates to `AFFILIATE_TEMPLATES` in `packages/shared/src/links.ts`.
-2. Betchu referral link format + attribution dashboard (clicks → signups → first deposit).
-3. The Record (P0 #11): implement `fetch_final_scores` (odds API scores endpoint) in `grading.rs`, add `Sport` to `PickBlock`, publish the daily reveal to the free channel + all newsletter tiers. Rule: every published pick gets graded and revealed — losses included, reveals immutable. (Settlement already uses structured `pick_team`/`picked_line` — no string parsing.)
-4. Public web page for The Record (rolling performance, per-sport splits) — the acquisition landing page.
+## Phase 3 — track record and post-hoc transparency
+1. The Record (P0 #11): implement `fetch_final_scores` (odds API scores endpoint) in `grading.rs`, add `Sport` to `PickBlock`, publish the daily reveal to the free channel + all newsletter tiers. Rule: every published pick gets graded and revealed — losses included, reveals immutable. (Settlement already uses structured `pick_team`/`picked_line` — no string parsing.)
+2. Public web page for The Record (rolling performance, per-sport splits) — the primary acquisition and trust asset.
+3. Model calibration metrics: confidence vs actual win rate, Brier score, closing-line-value tracking.
 4. Sharp live alerts: template-driven from line-move triggers (no LLM in alert path).
 
+## Neutrality rules (hard constraints on any change)
+- Vendors are allowed, but only as configured data (`VENDORS_FILE`): no vendor name, link or referral code is hardcoded in code, docs or templates, and no vendor is featured, ranked first or given special treatment. Every vendor is neutral: there are no affiliated vendors and no `affiliated` option.
+- Vendor output is alphabetical, equal-prominence, never next to odds, and always carries code-generated commission disclosure where applicable. Do not let templates bypass it.
+- Never publish an individual book's price or name next to our analysis; publish our fair odds, consensus and edge. `publish::assert_no_source_odds` enforces it — do not weaken it.
+- Any AI-extracted factor must cite a supplied source and carry a timestamp, or it is dropped.
+
 ## Hard gates (do not launch without)
-- [ ] Legal sign-off: jurisdictions, related-party disclosure wording, Betchu-list emailing
+- [ ] Legal sign-off: operator neutrality confirmation, betting-analysis framing requirements
 - [ ] `assertCompliant` wired into EVERY send path (email + bot broadcast)
 - [ ] Token budget alerting live (`DAILY_TOKEN_BUDGET_USD`)
 - [ ] Human review gate on daily sends
 - [ ] Age/jurisdiction attestation at Beehiiv signup and Telegram channel join
+- [ ] Analysis disclaimer on every pick and in every channel
+- [ ] Data source attribution per source's terms documented in docs/DATA_SOURCES.md
 
 ## Token budget guardrails (recap of PRD §6)
 - Generation cost scales with games, never users. If a change makes cost scale with subscribers, it's wrong.

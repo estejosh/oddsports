@@ -1,6 +1,7 @@
-//! Data ingestion — odds, lines, schedules. No AI here.
-//! v1 target: the-odds-api.com (cheap, covers all launch sports).
-//! TODO(fable): swap in Betchu's own odds feed when available (PRD open question).
+//! Stage 1 — sources. Odds, lines, schedules. No AI here.
+//! Reads an Odds-API-shaped feed from ODDS_API_BASE / ODDS_API_KEY (see
+//! docs/DATA_SOURCES.md for terms and attribution). Any feed that returns the
+//! same JSON shape can be pointed at; nothing here names or favours a book.
 
 use anyhow::Result;
 use chrono::Utc;
@@ -87,6 +88,7 @@ fn normalize(sport: Sport, ev: ApiEvent) -> Game {
                     book: bm.key.clone(),
                     american_odds: o.price as i32,
                     line: o.point,
+                    outcome: Some(o.name.clone()),
                     fetched_at: now.clone(),
                 });
             }

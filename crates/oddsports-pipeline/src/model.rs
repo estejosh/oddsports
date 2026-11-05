@@ -72,16 +72,21 @@ fn analyze_spread(game: &Game, history: &[LinePoint]) -> Option<ModelOutput> {
         (PickTeam::Away, format!("{} {}", game.away, fmt_line(-market_line)))
     };
 
+    // Never name the book: published output carries consensus, not per-source prices.
+    let _ = best_book;
+    let now = Utc::now().to_rfc3339();
     let mut factors = vec![Factor {
-        name: "book consensus deviation".into(),
+        name: "market consensus deviation".into(),
         direction: FactorDirection::For,
         weight: 1.0,
         detail: format!(
-            "{best_book} posts {} vs market median {} across {} books",
+            "most divergent line {} vs market median {} across {} books",
             fmt_line(market_line),
             fmt_line(fair_line),
             points.len()
         ),
+        source: "internal:market_consensus".into(),
+        as_of: now.clone(),
     }];
 
     // Signal 2 — steam: sustained median movement across snapshots means sharp
@@ -105,10 +110,15 @@ fn analyze_spread(game: &Game, history: &[LinePoint]) -> Option<ModelOutput> {
                     history.len(),
                     if agrees { "toward our side" } else { "against our side" }
                 ),
+                source: "internal:line_history".into(),
+                as_of: history.last().map(|p| p.at.clone()).unwrap_or(now),
             });
             confidence = if agrees { (confidence + 1).min(5) } else { confidence.saturating_sub(1).max(1) };
         }
     }
+
+    // A factor with no source never ships.
+    factors.retain(Factor::is_sourced);
 
     let line_history = if history.is_empty() {
         vec![LinePoint { at: Utc::now().to_rfc3339(), line: market_line }]
@@ -151,5 +161,59 @@ fn fmt_line(n: f64) -> String {
         format!("+{n}")
     } else {
         format!("{n}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oddsports_shared::{BookLine, Sport};
+
+    fn spread(book: &str, line: f64) -> BookLine {
+        BookLine {
+            book: book.into(),
+            american_odds: -110,
+            line: Some(line),
+            outcome: Some("Celtics".into()),
+            fetched_at: "2026-10-02T12:00:00Z".into(),
+        }
+    }
+
+    fn game() -> Game {
+        Game {
+            id: "g1".into(),
+            sport: Sport::Nba,
+            home: "Celtics".into(),
+            away: "Knicks".into(),
+            starts_at: "2026-10-03T23:30:00Z".into(),
+            spread_lines: vec![
+                spread("fanduel", -4.5),
+                spread("draftkings", -4.5),
+                spread("betmgm", -4.5),
+                spread("williamhill_us", -6.5),
+            ],
+            moneyline_lines: vec![],
+            total_lines: vec![],
+        }
+    }
+
+    #[test]
+    fn model_factors_are_sourced_and_name_no_book() {
+        let out = run_model(&[game()], &HashMap::new());
+        assert_eq!(out.len(), 1);
+        for f in &out[0].factors {
+            assert!(f.is_sourced(), "unsourced factor shipped: {f:?}");
+            let text = format!("{} {}", f.name, f.detail).to_lowercase();
+            for book in ["fanduel", "draftkings", "betmgm", "williamhill"] {
+                assert!(!text.contains(book), "factor names {book}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn too_few_books_means_no_pick() {
+        let mut g = game();
+        g.spread_lines.truncate(2);
+        assert!(run_model(&[g], &HashMap::new()).is_empty());
     }
 }
